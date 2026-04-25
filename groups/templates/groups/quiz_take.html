@@ -1,0 +1,662 @@
+{% extends 'groups/base.html' %}
+
+{% block title %}Quiz - {{ group.name }}{% endblock %}
+
+{% block content %}
+<div class="min-h-screen bg-gray-100 py-8">
+    <div class="max-w-4xl mx-auto px-4">
+        <div class="bg-white rounded-none border border-gray-300 shadow-sm">
+            <!-- Header - minimalist -->
+            <div class="px-6 py-4 border-b border-gray-300 bg-white">
+                <div class="flex justify-between items-center">
+                    <div>
+                        <h2 class="text-xl font-normal text-gray-800">
+                            Test: {{ group.name }}
+                        </h2>
+                        <p class="text-sm text-gray-500 mt-1">
+                            {{ student.full_name }}
+                        </p>
+                    </div>
+                    <div class="text-right">
+                        <span class="text-xs text-gray-400">Savollar: {{ total_questions }}</span>
+                    </div>
+                </div>
+            </div>
+            
+            <div class="p-6">
+                {% if is_exam_active %}
+                    {% if result %}
+                    <!-- Natija -->
+                    <div class="border border-gray-300 p-8 text-center bg-gray-50">
+                        <div class="text-5xl mb-4">📄</div>
+                        <h3 class="text-xl font-normal text-gray-800">Test yakunlandi</h3>
+                        <div class="mt-4">
+                            <p class="text-gray-700">
+                                Natija: <strong>{{ result.score }}/{{ result.total_questions }}</strong>
+                            </p>
+                            <p class="text-gray-500 text-sm mt-1">
+                                ({% widthratio result.score result.total_questions 100 %}%)
+                            </p>
+                        </div>
+                        <a href="{% url 'student_panel' %}" class="mt-6 inline-block border border-gray-400 bg-white hover:bg-gray-100 text-gray-700 px-6 py-2 transition">
+                            Panelga qaytish
+                        </a>
+                    </div>
+                    {% else %}
+                    
+                    <!-- Test faol xabari va timer -->
+                    <div class="border border-gray-300 p-4 mb-6 bg-gray-50">
+                        <div class="flex items-center justify-between">
+                            <div>
+                                <span class="text-gray-700 text-sm">▼ Test faol</span>
+                            </div>
+                            <div>
+                                {% if time_limit > 0 %}
+                                <div class="text-center">
+                                    <span class="text-xs text-gray-500">Qolgan vaqt</span>
+                                    <p id="timer" class="text-lg font-mono font-bold text-gray-800">{{ time_limit }}:00</p>
+                                </div>
+                                {% else %}
+                                <div id="clock" class="text-xs text-gray-400"></div>
+                                {% endif %}
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Sozlamalar haqida ma'lumot -->
+                    <div class="border border-gray-200 p-3 mb-5 bg-gray-50 text-xs text-gray-500">
+                        <div class="flex items-center gap-4">
+                            <span>🎲 Random tanlov</span>
+                            <span>📊 {{ total_questions }} ta savol</span>
+                            {% if time_limit > 0 %}
+                            <span>⏱ {{ time_limit }} daqiqa</span>
+                            {% endif %}
+                        </div>
+                    </div>
+
+                    <!-- ============ WORD BANK - OQ QORA ============ -->
+                    <div class="border border-gray-300 p-5 mb-8 bg-gray-50">
+                        <div class="flex items-start gap-3">
+                            <div class="text-gray-500 text-lg">📋</div>
+                            <div class="flex-1">
+                                <h4 class="text-sm font-medium text-gray-600 uppercase tracking-wide mb-3">WORD BANK</h4>
+                                <div id="wordBankContainer" class="flex flex-wrap gap-2">
+                                    <!-- So'zlar JS orqali -->
+                                </div>
+                                <div class="mt-3 text-xs text-gray-400">
+                                    ↓ So'zni bosib nusxalang
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                    <!-- ============ WORD BANK TUGADI ============ -->
+                    
+                    {% if questions %}
+                    <form id="quizForm" onsubmit="submitQuiz(event)">
+                        {% csrf_token %}
+                        <input type="hidden" name="group_id" value="{{ group.id }}" id="groupId">
+                        
+                        <div class="space-y-6" id="questionsContainer">
+                            {% for question in questions %}
+                            <div class="border border-gray-200 p-5 bg-white" data-qid="{{ question.id }}">
+                                <div class="flex items-start gap-3">
+                                    <div class="flex-shrink-0 w-6 text-gray-400 text-sm mt-0.5">
+                                        {{ forloop.counter }}.
+                                    </div>
+                                    <div class="flex-1">
+                                        <div class="question-text text-gray-800 text-base leading-relaxed" 
+                                             data-text="{{ question.question_text }}" 
+                                             data-qid="{{ question.id }}"
+                                             data-correct="{{ question.correct_answer|lower }}">
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                            {% endfor %}
+                        </div>
+                        
+                        <div class="mt-8 pt-4 border-t border-gray-300">
+                            <button type="submit" id="submitBtn" class="w-full border border-gray-400 bg-white hover:bg-gray-100 text-gray-700 px-6 py-2 transition text-base">
+                                Javoblarni Yuborish
+                            </button>
+                        </div>
+                    </form>
+                    {% else %}
+                    <div class="text-center py-12 border border-gray-200 bg-gray-50">
+                        <div class="text-4xl mb-3 text-gray-400">📭</div>
+                        <p class="text-gray-500">Savollar mavjud emas</p>
+                        <p class="text-xs text-gray-400 mt-2">Iltimos, o'qituvchiga murojaat qiling</p>
+                    </div>
+                    {% endif %}
+                    {% endif %}
+                {% else %}
+                <div class="text-center py-16 border border-gray-200 bg-gray-50">
+                    <div class="text-5xl mb-4 text-gray-400">⏸</div>
+                    <h3 class="text-lg font-normal text-gray-600">Test faol emas</h3>
+                    <p class="text-gray-400 text-sm mt-2">O'qituvchi testni boshlashini kuting</p>
+                    <a href="{% url 'student_panel' %}" class="mt-6 inline-block border border-gray-400 bg-white hover:bg-gray-100 text-gray-700 px-6 py-2 transition">
+                        Panelga qaytish
+                    </a>
+                </div>
+                {% endif %}
+            </div>
+        </div>
+    </div>
+</div>
+
+<style>
+* {
+    box-sizing: border-box;
+}
+
+body {
+    background: #f5f5f5;
+}
+
+/* Minimalist loading */
+.loading {
+    opacity: 0.6;
+    pointer-events: none;
+}
+
+.spinner {
+    display: inline-block;
+    width: 16px;
+    height: 16px;
+    border: 2px solid #ccc;
+    border-top-color: #333;
+    border-radius: 50%;
+    animation: spin 0.8s linear infinite;
+    margin-right: 8px;
+}
+
+@keyframes spin {
+    to { transform: rotate(360deg); }
+}
+
+/* Notifications - oq qora */
+.notification {
+    position: fixed;
+    top: 20px;
+    right: 20px;
+    z-index: 1000;
+    padding: 12px 20px;
+    background: #1a1a1a;
+    color: white;
+    font-size: 14px;
+    font-weight: normal;
+    animation: slideIn 0.2s ease;
+    z-index: 9999;
+    box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+    letter-spacing: 0.3px;
+}
+
+.notification.success {
+    background: #1a3a1a;
+    border-left: 3px solid #00aa00;
+}
+
+.notification.error {
+    background: #3a1a1a;
+    border-left: 3px solid #cc0000;
+}
+
+.notification.warning {
+    background: #3a3a1a;
+    border-left: 3px solid #ffaa00;
+}
+
+@keyframes slideIn {
+    from {
+        transform: translateX(100%);
+        opacity: 0;
+    }
+    to {
+        transform: translateX(0);
+        opacity: 1;
+    }
+}
+
+/* Error input */
+.error-input {
+    border: 1px solid #cc0000 !important;
+    background-color: #fff5f5 !important;
+}
+
+/* Blank input - minimalist */
+.blank-input {
+    display: inline-block;
+    border: 1px solid #aaa;
+    background: #fff;
+    text-align: center;
+    font-size: 14px;
+    padding: 6px 12px;
+    margin: 0 4px;
+    min-width: 140px;
+    outline: none;
+    font-family: 'Courier New', monospace;
+    letter-spacing: 0.3px;
+    color: #111;
+    border-radius: 0px;
+}
+
+.blank-input:focus {
+    border-color: #333;
+    background: #fff;
+    box-shadow: none;
+}
+
+.blank-input::placeholder {
+    color: #bbb;
+    font-style: italic;
+    font-family: monospace;
+}
+
+/* Question text */
+.question-text {
+    line-height: 1.8;
+    font-size: 15px;
+}
+
+.question-text span {
+    display: inline;
+}
+
+.question-text input.blank-input {
+    margin: 0 6px;
+    vertical-align: middle;
+}
+
+/* Word Bank - minimalist */
+.word-bank-item {
+    display: inline-block;
+    background: white;
+    border: 1px solid #aaa;
+    padding: 5px 14px;
+    font-size: 13px;
+    font-family: 'Courier New', monospace;
+    color: #222;
+    cursor: pointer;
+    transition: all 0.15s;
+    letter-spacing: 0.3px;
+}
+
+.word-bank-item:hover {
+    background: #eaeaea;
+    border-color: #666;
+    transform: translateY(-1px);
+}
+
+.word-bank-item:active {
+    transform: scale(0.97);
+}
+
+/* Timer highlight when low time */
+.timer-low {
+    color: #cc0000 !important;
+    animation: pulse 1s infinite;
+}
+
+@keyframes pulse {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.7; }
+}
+
+/* Container max width */
+.max-w-4xl {
+    max-width: 896px;
+}
+
+/* No rounded corners - sharp edges */
+.rounded-none {
+    border-radius: 0;
+}
+
+/* Simple border */
+.border {
+    border-style: solid;
+}
+
+/* Typography */
+.text-sm {
+    font-size: 0.875rem;
+}
+
+.text-xs {
+    font-size: 0.75rem;
+}
+
+.uppercase {
+    text-transform: uppercase;
+}
+
+.tracking-wide {
+    letter-spacing: 0.5px;
+}
+
+/* Simple hover */
+.hover\:bg-gray-100:hover {
+    background-color: #f5f5f5;
+}
+
+/* Icons as text instead of FontAwesome */
+.fa, .fas, .far {
+    font-style: normal;
+}
+
+/* Progress indicator */
+.progress-indicator {
+    position: fixed;
+    bottom: 20px;
+    right: 20px;
+    background: #1a1a1a;
+    color: white;
+    padding: 6px 12px;
+    font-size: 11px;
+    font-family: monospace;
+    z-index: 100;
+}
+</style>
+
+<script>
+// Timer va sozlamalar
+let timeLeft = {{ time_limit|default:0 }} * 60;
+let timerInterval = null;
+let isSubmitting = false;
+
+function getCookie(name) {
+    let cookieValue = null;
+    if (document.cookie && document.cookie !== '') {
+        const cookies = document.cookie.split(';');
+        for (let i = 0; i < cookies.length; i++) {
+            const cookie = cookies[i].trim();
+            if (cookie.substring(0, name.length + 1) === (name + '=')) {
+                cookieValue = decodeURIComponent(cookie.substring(name.length + 1));
+                break;
+            }
+        }
+    }
+    return cookieValue;
+}
+
+const csrftoken = getCookie('csrftoken');
+
+function escapeHtml(text) {
+    if (!text) return '';
+    const div = document.createElement('div');
+    div.textContent = text;
+    return div.innerHTML;
+}
+
+// Word Bank uchun barcha to'g'ri javoblarni yig'ish
+function collectWordBank() {
+    const questionDivs = document.querySelectorAll('.question-text');
+    const words = [];
+    
+    questionDivs.forEach(div => {
+        const correctAnswer = div.getAttribute('data-correct');
+        if (correctAnswer && correctAnswer.trim() !== '') {
+            words.push(correctAnswer.trim());
+        }
+    });
+    
+    return [...new Set(words)];
+}
+
+// Word Bank ni render qilish
+function renderWordBank() {
+    const words = collectWordBank();
+    const container = document.getElementById('wordBankContainer');
+    
+    if (!container) return;
+    
+    if (words.length === 0) {
+        container.innerHTML = '<span class="text-gray-400 text-xs">— no words —</span>';
+        return;
+    }
+    
+    let html = '';
+    words.forEach((word) => {
+        html += `<span class="word-bank-item" data-word="${escapeHtml(word)}" onclick="copyToClipboard('${escapeHtml(word).replace(/'/g, "\\'")}')">
+                    ${escapeHtml(word)}
+                </span>`;
+    });
+    
+    container.innerHTML = html;
+}
+
+// So'zni nusxalash
+function copyToClipboard(word) {
+    navigator.clipboard.writeText(word).then(() => {
+        showNotification(`"${word}" copied`, 'success');
+    }).catch(() => {
+        alert(`Copy: ${word}`);
+    });
+}
+
+// Savollarni render qilish
+function renderQuestions() {
+    const questionDivs = document.querySelectorAll('.question-text');
+    let totalBlanks = 0;
+    
+    questionDivs.forEach(div => {
+        const fullText = div.getAttribute('data-text');
+        const questionId = div.getAttribute('data-qid');
+        
+        if (fullText) {
+            if (fullText.includes('___')) {
+                const parts = fullText.split('___');
+                let html = '';
+                
+                parts.forEach((part, index) => {
+                    if (part) {
+                        html += `<span>${escapeHtml(part)}</span>`;
+                    }
+                    
+                    if (index < parts.length - 1) {
+                        html += `<input type="text" 
+                                        name="q_${questionId}_${index}" 
+                                        class="blank-input" 
+                                        placeholder="______" 
+                                        autocomplete="off">`;
+                        totalBlanks++;
+                    }
+                });
+                
+                div.innerHTML = html;
+            } else {
+                div.innerHTML = `<span>${escapeHtml(fullText)}</span>
+                                <div class="mt-2">
+                                    <input type="text" 
+                                           name="q_${questionId}_0" 
+                                           class="blank-input w-full" 
+                                           placeholder="answer..." 
+                                           autocomplete="off"
+                                           style="width: 100%; margin-left: 0;">
+                                </div>`;
+                totalBlanks++;
+            }
+        }
+    });
+    
+    renderWordBank();
+    
+    // Progress indikator
+    const progressDiv = document.createElement('div');
+    progressDiv.className = 'progress-indicator';
+    progressDiv.innerHTML = `📝 ${totalBlanks} ta javob maydoni`;
+    document.body.appendChild(progressDiv);
+    
+    return totalBlanks;
+}
+
+function showNotification(message, type) {
+    const oldNotifications = document.querySelectorAll('.notification');
+    oldNotifications.forEach(n => n.remove());
+    
+    const notification = document.createElement('div');
+    notification.className = `notification ${type}`;
+    notification.innerHTML = message;
+    document.body.appendChild(notification);
+    
+    setTimeout(() => {
+        notification.remove();
+    }, 2500);
+}
+
+function submitQuiz(event) {
+    event.preventDefault();
+    
+    if (isSubmitting) return;
+    
+    const answers = {};
+    const inputs = document.querySelectorAll('.blank-input');
+    let allFilled = true;
+    let filledCount = 0;
+    
+    inputs.forEach(input => {
+        const value = input.value.trim();
+        const name = input.getAttribute('name');
+        
+        if (value === '') {
+            allFilled = false;
+            input.classList.add('error-input');
+        } else {
+            input.classList.remove('error-input');
+            answers[name] = value;
+            filledCount++;
+        }
+    });
+    
+    if (!allFilled) {
+        showNotification(`⚠️ ${inputs.length - filledCount} ta javob maydoni bo'sh!`, 'error');
+        return;
+    }
+    
+    const groupId = document.getElementById('groupId').value;
+    const submitBtn = document.getElementById('submitBtn');
+    const originalText = submitBtn.innerHTML;
+    
+    isSubmitting = true;
+    submitBtn.disabled = true;
+    submitBtn.innerHTML = '<span class="spinner"></span> checking...';
+    document.getElementById('quizForm').classList.add('loading');
+    
+    fetch('{% url "quiz_submit" %}', {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json',
+            'X-CSRFToken': csrftoken
+        },
+        body: JSON.stringify({
+            group_id: groupId,
+            answers: answers
+        })
+    })
+    .then(response => response.json())
+    .then(data => {
+        if (data.success) {
+            showNotification('✅ ' + data.message, 'success');
+            setTimeout(() => {
+                location.reload();
+            }, 1500);
+        } else {
+            showNotification('❌ ' + data.message, 'error');
+            submitBtn.disabled = false;
+            submitBtn.innerHTML = originalText;
+            document.getElementById('quizForm').classList.remove('loading');
+            isSubmitting = false;
+        }
+    })
+    .catch(error => {
+        showNotification('⚠️ Server xatosi! Qayta urining.', 'error');
+        submitBtn.disabled = false;
+        submitBtn.innerHTML = originalText;
+        document.getElementById('quizForm').classList.remove('loading');
+        isSubmitting = false;
+    });
+}
+
+// Timer funksiyasi
+function startTimer() {
+    const timerElement = document.getElementById('timer');
+    if (!timerElement) return;
+    
+    if (timeLeft > 0) {
+        timerInterval = setInterval(() => {
+            if (timeLeft <= 0) {
+                clearInterval(timerInterval);
+                timerElement.textContent = "0:00";
+                timerElement.classList.add('timer-low');
+                showNotification('⏰ Vaqt tugadi! Test avtomatik yakunlanadi...', 'warning');
+                setTimeout(() => {
+                    document.getElementById('submitBtn').click();
+                }, 1000);
+                return;
+            }
+            
+            timeLeft--;
+            const minutes = Math.floor(timeLeft / 60);
+            const seconds = timeLeft % 60;
+            timerElement.textContent = `${minutes}:${seconds.toString().padStart(2, '0')}`;
+            
+            if (timeLeft <= 60) {
+                timerElement.classList.add('timer-low');
+            }
+        }, 1000);
+    }
+}
+
+document.addEventListener('DOMContentLoaded', function() {
+    const totalBlanks = renderQuestions();
+    
+    // Timer ni ishga tushirish
+    startTimer();
+    
+    // Agar time_limit bo'lmasa, oddiy soat
+    if ({{ time_limit|default:0 }} === 0) {
+        function updateClock() {
+            const clock = document.getElementById('clock');
+            if (clock) {
+                const now = new Date();
+                const timeStr = now.toLocaleTimeString('en-US', {hour: '2-digit', minute:'2-digit', second:'2-digit'});
+                clock.innerHTML = '🕐 ' + timeStr;
+            }
+        }
+        updateClock();
+        setInterval(updateClock, 1000);
+    }
+    
+    // Enter bilan navigation
+    const inputs = document.querySelectorAll('.blank-input');
+    inputs.forEach((input, index) => {
+        input.addEventListener('keypress', function(e) {
+            if (e.key === 'Enter') {
+                e.preventDefault();
+                const nextInput = inputs[index + 1];
+                if (nextInput) {
+                    nextInput.focus();
+                } else {
+                    document.getElementById('submitBtn').click();
+                }
+            }
+        });
+    });
+    
+    // Sahifani tark etishda ogohlantirish
+    window.addEventListener('beforeunload', function(e) {
+        if (!isSubmitting) {
+            const inputs = document.querySelectorAll('.blank-input');
+            let hasValue = false;
+            inputs.forEach(input => {
+                if (input.value.trim() !== '') hasValue = true;
+            });
+            if (hasValue) {
+                e.preventDefault();
+                e.returnValue = '';
+            }
+        }
+    });
+});
+</script>
+{% endblock %}

@@ -1,0 +1,351 @@
+{% extends 'groups/base.html' %}
+
+{% block title %}Foydalanuvchilar{% endblock %}
+
+{% block content %}
+<div class="min-h-screen bg-gray-50">
+    <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
+        <div class="mt-4">
+            <a href="{% url 'admin_panel' %}" class="text-sm text-gray-600 hover:text-gray-900">
+                <i class="fas fa-arrow-left mr-1"></i> Orqaga
+            </a>
+        </div>
+        <div class="bg-white rounded-lg border border-gray-200">
+            <div class="px-6 py-4 border-b border-gray-200 flex justify-between items-center">
+                
+                <div class="flex items-center gap-4">
+                    
+                    <h3 class="text-lg font-medium text-gray-900">
+                        <i class="fas fa-users mr-2 text-gray-600"></i> Foydalanuvchilar ro'yxati
+                    </h3>
+                    <span id="selectedCount" class="text-xs bg-gray-100 text-gray-600 px-2 py-1 rounded-full hidden">0 ta tanlangan</span>
+                </div>
+                <div class="flex items-center gap-3">
+                    <!-- Ko'p o'chirish tugmasi (dastlab yashirin) -->
+                    
+                    <a href="{% url 'student_add' %}" class="bg-gray-900 hover:bg-gray-800 text-white text-sm px-4 py-2 rounded-lg transition">
+                        <i class="fas fa-plus mr-1"></i> Foydalanuvchi qo'shish
+                    </a>
+                </div>
+            </div>
+            <div class="overflow-x-auto">
+                <form id="bulkDeleteForm" method="post" action="{% url 'student_bulk_delete' %}">
+                    {% csrf_token %}
+                    <table class="w-full">
+                        <thead class="bg-gray-50">
+                            <tr class="text-left text-sm text-gray-500">
+                                <th class="px-6 py-3 w-10">
+                                    <input type="checkbox" id="selectAll" class="rounded border-gray-300 text-gray-700 focus:ring-gray-500">
+                                </th>
+                                <th class="px-6 py-3 w-16">#</th>
+                                <th class="px-6 py-3">Ism</th>
+                                <th class="px-6 py-3">Familiya</th>
+                                <th class="px-6 py-3">Username</th>
+                                <th class="px-6 py-3">Email</th>
+                                <th class="px-6 py-3">Guruh</th>
+                                <th class="px-6 py-3 w-24">Amallar</th>
+                            </tr>
+                        </thead>
+                        <tbody class="divide-y divide-gray-200">
+                            {% for student in students %}
+                            <tr class="text-sm hover:bg-gray-50 transition" data-student-id="{{ student.pk }}">
+                                <td class="px-6 py-3">
+                                    <input type="checkbox" name="student_ids" value="{{ student.pk }}" class="student-checkbox rounded border-gray-300 text-gray-700 focus:ring-gray-500">
+                                </td>
+                                <td class="px-6 py-3 text-gray-500">{{ forloop.counter }}</td>
+                                <td class="px-6 py-3 text-gray-900">{{ student.user.first_name|default:"-" }}</td>
+                                <td class="px-6 py-3 text-gray-900">{{ student.user.last_name|default:"-" }}</td>
+                                <td class="px-6 py-3 text-gray-600">{{ student.user.username }}</td>
+                                <td class="px-6 py-3 text-gray-500">{{ student.user.email|default:"-" }}</td>
+                                <td class="px-6 py-3">
+                                    {% if student.group %}
+                                        <span class="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-blue-100 text-blue-800">
+                                            {{ student.group.name }}
+                                        </span>
+                                    {% else %}
+                                        <span class="text-gray-400">-</span>
+                                    {% endif %}
+                                </td>
+                                <td class="px-6 py-3">
+                                    <div class="flex items-center space-x-2">
+                                        <a href="{% url 'student_edit' student.pk %}" class="text-gray-500 hover:text-gray-700 transition" title="Tahrirlash">
+                                            <i class="fas fa-edit"></i>
+                                        </a>
+                                        <button type="button" onclick="confirmSingleDelete({{ student.pk }}, '{{ student.user.get_full_name|default:student.user.username }}')" class="text-red-400 hover:text-red-600 transition" title="O'chirish">
+                                            <i class="fas fa-trash-alt"></i>
+                                        </button>
+                                    </div>
+                                </td>
+                            </tr>
+                            {% empty %}
+                            <tr>
+                                <td colspan="8" class="px-6 py-12 text-center text-gray-500">
+                                    <i class="fas fa-user-plus text-gray-300 text-4xl mb-3 block"></i>
+                                    Hech qanday foydalanuvchi mavjud emas
+                                    <div class="mt-3">
+                                        <a href="{% url 'student_add' %}" class="text-gray-600 hover:text-gray-800 text-sm">
+                                            <i class="fas fa-plus mr-1"></i> Birinchi foydalanuvchini qo'shish
+                                        </a>
+                                    </div>
+                                </td>
+                            </tr>
+                            {% endfor %}
+                        </tbody>
+                    </table>
+                </form>
+            </div>
+            
+            <!-- Bottom bar - Telegram uslubida -->
+            <div id="bottomBar" class="fixed bottom-0 left-0 right-0 bg-white border-t border-gray-200 shadow-lg transform translate-y-full transition-transform duration-300 z-50">
+                <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-3">
+                    <div class="flex items-center justify-between">
+                        <div class="flex items-center gap-3">
+                            <div class="w-8 h-8 bg-gray-100 rounded-full flex items-center justify-center">
+                                <span id="bottomBarCount" class="text-sm font-semibold text-gray-700">0</span>
+                            </div>
+                            <span class="text-sm text-gray-600">ta foydalanuvchi tanlandi</span>
+                        </div>
+                        <div class="flex items-center gap-3">
+                            <button id="cancelSelection" class="px-4 py-2 text-gray-500 hover:text-gray-700 transition">
+                                <i class="fas fa-times mr-1"></i> Bekor qilish
+                            </button>
+                            <button id="confirmBulkDelete" class="px-4 py-2 bg-red-500 hover:bg-red-600 text-white rounded-lg transition">
+                                <i class="fas fa-trash-alt mr-1"></i> O'chirish
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+       
+    </div>
+</div>
+
+<!-- O'chirishni tasdiqlash modal (SweetAlert2) -->
+<script src="https://cdn.jsdelivr.net/npm/sweetalert2@11"></script>
+
+<script>
+// DOM elementlari
+const selectAllCheckbox = document.getElementById('selectAll');
+const studentCheckboxes = document.querySelectorAll('.student-checkbox');
+const bulkDeleteBtn = document.getElementById('bulkDeleteBtn');
+const bottomBar = document.getElementById('bottomBar');
+const bottomBarCount = document.getElementById('bottomBarCount');
+const cancelSelection = document.getElementById('cancelSelection');
+const confirmBulkDelete = document.getElementById('confirmBulkDelete');
+const selectedCountSpan = document.getElementById('selectedCount');
+const bulkDeleteForm = document.getElementById('bulkDeleteForm');
+
+// Tanlanganlar sonini yangilash
+function updateSelectionCount() {
+    const checkedBoxes = document.querySelectorAll('.student-checkbox:checked');
+    const count = checkedBoxes.length;
+    
+    // Bottom barni ko'rsatish/yashirish
+    if (count > 0) {
+        bottomBar.classList.remove('translate-y-full');
+        bottomBar.classList.add('translate-y-0');
+        bulkDeleteBtn.classList.remove('hidden');
+        selectedCountSpan.classList.remove('hidden');
+        selectedCountSpan.textContent = `${count} ta tanlangan`;
+        bottomBarCount.textContent = count;
+    } else {
+        bottomBar.classList.add('translate-y-full');
+        bottomBar.classList.remove('translate-y-0');
+        bulkDeleteBtn.classList.add('hidden');
+        selectedCountSpan.classList.add('hidden');
+    }
+    
+    // "Hammasini tanlash" checkbox holati
+    if (selectAllCheckbox) {
+        const totalCheckboxes = studentCheckboxes.length;
+        const checkedCount = document.querySelectorAll('.student-checkbox:checked').length;
+        
+        if (checkedCount === 0) {
+            selectAllCheckbox.checked = false;
+            selectAllCheckbox.indeterminate = false;
+        } else if (checkedCount === totalCheckboxes && totalCheckboxes > 0) {
+            selectAllCheckbox.checked = true;
+            selectAllCheckbox.indeterminate = false;
+        } else {
+            selectAllCheckbox.checked = false;
+            selectAllCheckbox.indeterminate = true;
+        }
+    }
+}
+
+// Hammasini tanlash/ochirish
+if (selectAllCheckbox) {
+    selectAllCheckbox.addEventListener('change', function() {
+        const isChecked = this.checked;
+        studentCheckboxes.forEach(checkbox => {
+            checkbox.checked = isChecked;
+        });
+        updateSelectionCount();
+    });
+}
+
+// Har bir checkbox uchun event
+studentCheckboxes.forEach(checkbox => {
+    checkbox.addEventListener('change', updateSelectionCount);
+});
+
+// Tanlovni bekor qilish
+cancelSelection.addEventListener('click', function() {
+    studentCheckboxes.forEach(checkbox => {
+        checkbox.checked = false;
+    });
+    updateSelectionCount();
+});
+
+// O'chirish tugmasi (bottom bardagi)
+confirmBulkDelete.addEventListener('click', function() {
+    const checkedBoxes = document.querySelectorAll('.student-checkbox:checked');
+    const count = checkedBoxes.length;
+    const studentNames = [];
+    
+    checkedBoxes.forEach(checkbox => {
+        const row = checkbox.closest('tr');
+        const firstName = row.cells[2]?.textContent.trim() || '-';
+        const lastName = row.cells[3]?.textContent.trim() || '-';
+        const fullName = `${firstName} ${lastName}`.trim();
+        studentNames.push(fullName || 'Nomsiz foydalanuvchi');
+    });
+    
+    Swal.fire({
+        title: `${count} ta foydalanuvchini o'chirish`,
+        html: `
+            <div class="text-left">
+                <p class="mb-3">Quyidagi foydalanuvchilar o'chiriladi:</p>
+                <div class="max-h-40 overflow-y-auto bg-gray-50 rounded-lg p-3">
+                    ${studentNames.map(name => `<div class="text-sm py-1">• ${name}</div>`).join('')}
+                </div>
+                <p class="text-red-500 text-sm mt-3 font-semibold">⚠️ Bu amalni qaytarib bo'lmaydi!</p>
+            </div>
+        `,
+        icon: 'warning',
+        showCancelButton: true,
+        confirmButtonColor: '#dc2626',
+        cancelButtonColor: '#6b7280',
+        confirmButtonText: 'Ha, o\'chirish',
+        cancelButtonText: 'Bekor qilish',
+        background: '#fff',
+        customClass: {
+            popup: 'rounded-xl'
+        }
+    }).then((result) => {
+        if (result.isConfirmed) {
+            bulkDeleteForm.submit();
+        }
+    });
+});
+
+// Bitta foydalanuvchini o'chirish (Telegram uslubida)
+function confirmSingleDelete(studentId, studentName) {
+    Swal.fire({
+        title: `${studentName}ni o'chirish`,
+        html: `
+            <p class="text-gray-600">Bu foydalanuvchini o'chirmoqchimisiz?</p>
+            <p class="text-red-500 text-sm mt-2">⚠️ Bu amalni qaytarib bo'lmaydi!</p>
+        `,
+        icon: 'question',
+        showCancelButton: true,
+        confirmButtonColor: '#dc2626',
+        cancelButtonColor: '#6b7280',
+        confirmButtonText: 'Ha, o\'chirish',
+        cancelButtonText: 'Bekor qilish',
+        background: '#fff',
+        customClass: {
+            popup: 'rounded-xl'
+        }
+    }).then((result) => {
+        if (result.isConfirmed) {
+            // Single delete uchun form yaratish
+            const form = document.createElement('form');
+            form.method = 'POST';
+            form.action = `/user/delete/${studentId}/`;
+            const csrfToken = document.createElement('input');
+            csrfToken.type = 'hidden';
+            csrfToken.name = 'csrfmiddlewaretoken';
+            csrfToken.value = '{{ csrf_token }}';
+            form.appendChild(csrfToken);
+            document.body.appendChild(form);
+            form.submit();
+        }
+    });
+}
+
+// Bulk delete form submit qilishdan oldin loader ko'rsatish
+bulkDeleteForm.addEventListener('submit', function(e) {
+    Swal.fire({
+        title: 'O\'chirilmoqda...',
+        text: 'Iltimos kuting',
+        allowOutsideClick: false,
+        didOpen: () => {
+            Swal.showLoading();
+        }
+    });
+});
+
+// Sahifa yuklanganda tanlanganlar sonini tekshirish
+document.addEventListener('DOMContentLoaded', function() {
+    updateSelectionCount();
+});
+</script>
+
+<style>
+/* Checkbox uslubi */
+input[type="checkbox"] {
+    width: 18px;
+    height: 18px;
+    cursor: pointer;
+    accent-color: #374151;
+}
+
+/* Bottom bar animatsiyasi */
+#bottomBar {
+    box-shadow: 0 -4px 6px -1px rgba(0, 0, 0, 0.1), 0 -2px 4px -1px rgba(0, 0, 0, 0.06);
+}
+
+/* Hover effektlari */
+tbody tr:hover {
+    background-color: #f9fafb;
+}
+
+/* Scrollbar uslubi */
+.overflow-x-auto::-webkit-scrollbar {
+    height: 6px;
+}
+
+.overflow-x-auto::-webkit-scrollbar-track {
+    background: #f1f1f1;
+    border-radius: 10px;
+}
+
+.overflow-x-auto::-webkit-scrollbar-thumb {
+    background: #cbd5e1;
+    border-radius: 10px;
+}
+
+.overflow-x-auto::-webkit-scrollbar-thumb:hover {
+    background: #94a3b8;
+}
+
+/* Tanlangan qator effekti */
+tr:has(.student-checkbox:checked) {
+    background-color: #fef3c7 !important;
+}
+
+/* Responsive */
+@media (max-width: 768px) {
+    .px-6 {
+        padding-left: 1rem;
+        padding-right: 1rem;
+    }
+    
+    table {
+        font-size: 12px;
+    }
+}
+</style>
+{% endblock %}

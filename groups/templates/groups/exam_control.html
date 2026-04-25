@@ -1,0 +1,149 @@
+{% extends 'groups/base.html' %}
+
+{% block title %}{{ group.name }} - Imtihon boshqaruvi{% endblock %}
+
+{% block content %}
+<div class="min-h-screen bg-gray-50 py-8">
+    <div class="max-w-5xl mx-auto px-4">
+        <div class="mb-6">
+            <a href="{% url 'admin_panel' %}" class="text-gray-500 hover:text-gray-700 text-sm">
+                <i class="fas fa-arrow-left mr-1"></i> Admin panelga qaytish
+            </a>
+            <h1 class="text-2xl font-bold text-gray-900 mt-2">{{ group.name }}</h1>
+            <p class="text-gray-500 text-sm">Imtihon boshqaruvi - Random savol tizimi</p>
+        </div>
+
+        <!-- Sozlamalar -->
+        <div class="bg-blue-50 border border-blue-200 rounded-lg p-4 mb-6">
+            <div class="flex items-start justify-between">
+                <div>
+                    <p class="text-sm font-medium text-blue-800">📊 Joriy sozlamalar</p>
+                    <p class="text-xs text-blue-700 mt-1">
+                        Har bir talaba <strong>{{ config.questions_per_student|default:5 }}</strong> ta random savol oladi
+                    </p>
+                    <p class="text-xs text-blue-600 mt-1">
+                        Mavjud savollar: <strong>{{ questions_count }}</strong> ta
+                    </p>
+                </div>
+                <a href="{% url 'group_exam_config' group.id %}" class="text-blue-600 hover:text-blue-800 text-sm">
+                    <i class="fas fa-cog mr-1"></i> Sozlamalarni o'zgartirish
+                </a>
+            </div>
+        </div>
+
+        <!-- Test holati -->
+        <div class="bg-white rounded-xl border border-gray-200 p-6 mb-6">
+            <div class="flex items-center justify-between flex-wrap gap-4">
+                <div>
+                    <h3 class="font-semibold text-gray-900">Test holati</h3>
+                    <p class="text-sm mt-1">
+                        Status: 
+                        {% if exam_control.is_active %}
+                        <span class="text-green-600 font-medium">✅ TEST FAOL</span>
+                        {% else %}
+                        <span class="text-red-600 font-medium">⛔ TEST TO'XTATILGAN</span>
+                        {% endif %}
+                    </p>
+                    {% if exam_control.started_at %}
+                    <p class="text-xs text-gray-400 mt-1">Boshlangan vaqt: {{ exam_control.started_at|date:"H:i:s" }}</p>
+                    {% endif %}
+                </div>
+                <div class="flex space-x-3">
+                    <button id="startBtn" class="bg-green-600 hover:bg-green-700 text-white px-6 py-2 rounded-lg transition flex items-center">
+                        <i class="fas fa-play mr-2"></i> START
+                    </button>
+                    <button id="stopBtn" class="bg-red-600 hover:bg-red-700 text-white px-6 py-2 rounded-lg transition flex items-center">
+                        <i class="fas fa-stop mr-2"></i> STOP
+                    </button>
+                </div>
+            </div>
+        </div>
+
+        <!-- Studentlar -->
+        <div class="bg-white rounded-xl border border-gray-200 overflow-hidden">
+            <div class="px-6 py-4 border-b border-gray-200 bg-gray-50">
+                <h3 class="font-semibold text-gray-900">
+                    <i class="fas fa-users mr-2"></i> Guruhdagi Studentlar ({{ students|length }})
+                </h3>
+            </div>
+            <div class="divide-y divide-gray-100">
+                {% for student in students %}
+                <div class="p-4 flex justify-between items-center">
+                    <div>
+                        <p class="font-medium text-gray-900">{{ student.full_name }}</p>
+                        <p class="text-xs text-gray-500">{{ student.user.username }}</p>
+                    </div>
+                    <div class="text-sm">
+                        {% if exam_control.is_active %}
+                        <span class="text-green-500"><i class="fas fa-circle mr-1" style="font-size: 8px;"></i> Testga tayyor</span>
+                        {% else %}
+                        <span class="text-gray-400"><i class="fas fa-circle mr-1" style="font-size: 8px;"></i> Kutmoqda</span>
+                        {% endif %}
+                    </div>
+                </div>
+                {% empty %}
+                <div class="p-8 text-center text-gray-500">
+                    <i class="fas fa-user-slash text-3xl mb-2 block"></i>
+                    Hech qanday student mavjud emas
+                </div>
+                {% endfor %}
+            </div>
+        </div>
+
+        <!-- Studentlar uchun link -->
+        <div class="mt-6 bg-gray-50 rounded-lg p-4">
+            <p class="text-sm text-gray-600">Studentlar uchun test linki:</p>
+            <div class="bg-white p-2 rounded border mt-2">
+                <code class="text-xs break-all">http://{{ request.get_host }}{% url 'quiz_take' group.id %}</code>
+            </div>
+            <button onclick="copyLink()" class="mt-2 text-gray-500 hover:text-gray-700 text-xs">
+                <i class="fas fa-copy mr-1"></i> Linkni nusxalash
+            </button>
+        </div>
+    </div>
+</div>
+
+<script>
+const csrftoken = '{{ csrf_token }}';
+
+document.getElementById('startBtn').addEventListener('click', function() {
+    fetch('{% url "start_exam_api" %}', {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json',
+            'X-CSRFToken': csrftoken
+        },
+        body: JSON.stringify({ group_id: {{ group.id }} })
+    })
+    .then(response => response.json())
+    .then(data => {
+        alert(data.message);
+        if (data.success) location.reload();
+    })
+    .catch(error => alert('Xatolik: ' + error));
+});
+
+document.getElementById('stopBtn').addEventListener('click', function() {
+    fetch('{% url "stop_exam_api" %}', {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json',
+            'X-CSRFToken': csrftoken
+        },
+        body: JSON.stringify({ group_id: {{ group.id }} })
+    })
+    .then(response => response.json())
+    .then(data => {
+        alert(data.message);
+        if (data.success) location.reload();
+    })
+    .catch(error => alert('Xatolik: ' + error));
+});
+
+function copyLink() {
+    const link = 'http://{{ request.get_host }}{% url "quiz_take" group.id %}';
+    navigator.clipboard.writeText(link);
+    alert('Link nusxalandi!');
+}
+</script>
+{% endblock %}

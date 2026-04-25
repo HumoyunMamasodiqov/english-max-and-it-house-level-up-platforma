@@ -1,0 +1,128 @@
+{% extends 'groups/base.html' %}
+
+{% block title %}{{ group.name }} - Imtihon sozlamalari{% endblock %}
+
+{% block content %}
+<div class="min-h-screen bg-gray-50 py-8">
+    <div class="max-w-2xl mx-auto px-4">
+        <div class="mb-6">
+            <a href="{% url 'exam_control' group.id %}" class="text-gray-500 hover:text-gray-700 text-sm">
+                <i class="fas fa-arrow-left mr-1"></i> Imtihon boshqaruviga qaytish
+            </a>
+            <h1 class="text-2xl font-bold text-gray-900 mt-2">{{ group.name }}</h1>
+            <p class="text-gray-500 text-sm">Har bir talaba nechta savol olishini belgilang</p>
+        </div>
+
+        <div class="bg-white rounded-xl border border-gray-200 shadow-sm">
+            <form method="POST" class="p-6">
+                {% csrf_token %}
+                
+                <div class="mb-6">
+                    <label class="block text-sm font-semibold text-gray-700 mb-3">
+                        <i class="fas fa-user-graduate mr-2"></i> Har bir talabaga savollar soni
+                    </label>
+                    <div class="flex items-center gap-3">
+                        <div class="flex items-center border border-gray-300 rounded-lg overflow-hidden">
+                            <button type="button" onclick="changeCount(-1)" class="px-3 py-2 bg-gray-50 hover:bg-gray-100">-</button>
+                            <input type="number" id="questionCount" name="questions_per_student" 
+                                   value="{{ config.questions_per_student|default:5 }}" min="1" max="{{ total_questions }}"
+                                   class="w-20 text-center py-2 border-0 focus:ring-0">
+                            <button type="button" onclick="changeCount(1)" class="px-3 py-2 bg-gray-50 hover:bg-gray-100">+</button>
+                        </div>
+                        <span class="text-sm text-gray-500">Mavjud savollar: <strong>{{ total_questions }}</strong> ta</span>
+                    </div>
+                    <p class="text-xs text-gray-400 mt-2">Har bir talaba {{ total_questions }} ta savoldan random ravishda shuncha savol oladi</p>
+                </div>
+
+                <div class="mb-6">
+                    <div class="bg-gray-100 rounded-full h-2">
+                        <div id="progressBar" class="bg-gray-700 h-2 rounded-full transition-all" 
+                             style="width: {% widthratio config.questions_per_student|default:5 total_questions 100 %}%"></div>
+                    </div>
+                    <div class="flex justify-between text-xs text-gray-500 mt-1">
+                        <span>0</span>
+                        <span id="percentText">{{ config.questions_per_student|default:5 }}/{{ total_questions }}</span>
+                        <span>{{ total_questions }}</span>
+                    </div>
+                </div>
+
+                <div class="mb-4 py-2 border-t border-gray-100 pt-4">
+                    <label class="flex items-center space-x-3">
+                        <input type="checkbox" name="random_order" {% if config.random_order %}checked{% endif %} class="w-4 h-4">
+                        <span class="text-sm text-gray-700">Savollarni random tartibda chiqarish</span>
+                    </label>
+                </div>
+
+                <div class="mb-4 py-2">
+                    <label class="flex items-center space-x-3">
+                        <input type="checkbox" name="show_correct_answer" {% if config.show_correct_answer %}checked{% endif %} class="w-4 h-4">
+                        <span class="text-sm text-gray-700">Test tugagandan so'ng to'g'ri javoblarni ko'rsatish</span>
+                    </label>
+                </div>
+
+                <div class="mb-6">
+                    <label class="block text-sm font-semibold text-gray-700 mb-3">Vaqt limiti (daqiqa)</label>
+                    <div class="flex items-center gap-3">
+                        <div class="flex items-center border border-gray-300 rounded-lg overflow-hidden">
+                            <button type="button" onclick="changeTime(-5)" class="px-3 py-2 bg-gray-50 hover:bg-gray-100">-</button>
+                            <input type="number" id="timeLimit" name="time_limit" value="{{ config.time_limit|default:0 }}" min="0" step="5" class="w-24 text-center py-2 border-0 focus:ring-0">
+                            <button type="button" onclick="changeTime(5)" class="px-3 py-2 bg-gray-50 hover:bg-gray-100">+</button>
+                        </div>
+                        <span class="text-sm text-gray-500">daqiqa (0 = cheksiz)</span>
+                    </div>
+                </div>
+
+                <div class="mb-6">
+                    <label class="block text-sm font-semibold text-gray-700 mb-3">Maksimal urinishlar</label>
+                    <div class="flex items-center gap-3">
+                        <div class="flex items-center border border-gray-300 rounded-lg overflow-hidden">
+                            <button type="button" onclick="changeAttempts(-1)" class="px-3 py-2 bg-gray-50 hover:bg-gray-100">-</button>
+                            <input type="number" id="maxAttempts" name="max_attempts" value="{{ config.max_attempts|default:1 }}" min="1" max="10" class="w-20 text-center py-2 border-0 focus:ring-0">
+                            <button type="button" onclick="changeAttempts(1)" class="px-3 py-2 bg-gray-50 hover:bg-gray-100">+</button>
+                        </div>
+                        <span class="text-sm text-gray-500">marta</span>
+                    </div>
+                </div>
+
+                <div class="flex justify-between items-center pt-4 border-t border-gray-100">
+                    <div class="text-sm text-gray-500">
+                        <i class="fas fa-info-circle mr-1"></i> Har bir talaba turlicha savollar oladi
+                    </div>
+                    <div class="flex space-x-3">
+                        <a href="{% url 'exam_control' group.id %}" class="px-4 py-2 text-gray-600 hover:text-gray-800">Bekor qilish</a>
+                        <button type="submit" class="bg-gray-900 hover:bg-gray-800 text-white px-6 py-2 rounded-lg">
+                            <i class="fas fa-save mr-2"></i> Saqlash
+                        </button>
+                    </div>
+                </div>
+            </form>
+        </div>
+    </div>
+</div>
+
+<script>
+function changeCount(delta) {
+    let input = document.getElementById('questionCount');
+    let newVal = parseInt(input.value) + delta;
+    let min = 1, max = {{ total_questions }};
+    if (newVal >= min && newVal <= max) {
+        input.value = newVal;
+        let percent = (newVal / max) * 100;
+        document.getElementById('progressBar').style.width = percent + '%';
+        document.getElementById('percentText').innerText = newVal + '/' + max;
+    }
+}
+
+function changeTime(delta) {
+    let input = document.getElementById('timeLimit');
+    let newVal = parseInt(input.value) + delta;
+    if (newVal >= 0) input.value = newVal;
+}
+
+function changeAttempts(delta) {
+    let input = document.getElementById('maxAttempts');
+    let newVal = parseInt(input.value) + delta;
+    if (newVal >= 1 && newVal <= 10) input.value = newVal;
+}
+</script>
+{% endblock %}
