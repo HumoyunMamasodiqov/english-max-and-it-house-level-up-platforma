@@ -98,21 +98,29 @@ class QuizSession(models.Model):
 
 
 class QuizResult(models.Model):
-    """Quiz natijalari"""
+    """Quiz natijalari - har bir urinish uchun alohida yozuv"""
     student = models.ForeignKey(Student, on_delete=models.CASCADE, related_name='quiz_results')
     quiz_session = models.ForeignKey(QuizSession, on_delete=models.CASCADE, related_name='results')
     score = models.IntegerField(default=0, verbose_name="Ball")
     total_questions = models.IntegerField(default=0, verbose_name="Jami savollar")
     answers = models.JSONField(default=dict, verbose_name="Javoblar")
     submitted_at = models.DateTimeField(auto_now_add=True)
+    attempt_number = models.IntegerField(default=1, verbose_name="Urinish raqami")
     
     class Meta:
         verbose_name = "Quiz natijasi"
         verbose_name_plural = "Quiz natijalari"
-        unique_together = ['student', 'quiz_session']
+        ordering = ['-submitted_at']
+        # unique_together ni olib tashladik - talaba bir necha marta topshirishi mumkin
     
     def __str__(self):
-        return f"{self.student.full_name} - {self.score}/{self.total_questions}"
+        return f"{self.student.full_name} - {self.score}/{self.total_questions} (#{self.attempt_number})"
+    
+    @property
+    def percentage(self):
+        if self.total_questions > 0:
+            return round((self.score / self.total_questions) * 100, 1)
+        return 0
 
 
 class GroupExamConfig(models.Model):
@@ -141,13 +149,16 @@ class UserExamAttempt(models.Model):
     started_at = models.DateTimeField(auto_now_add=True)
     completed_at = models.DateTimeField(null=True, blank=True)
     is_completed = models.BooleanField(default=False)
+    attempt_number = models.IntegerField(default=1, verbose_name="Urinish raqami")
     
     class Meta:
         verbose_name = "Imtihon urinishi"
         verbose_name_plural = "Imtihon urinishlari"
+        ordering = ['-started_at']
     
     def __str__(self):
-        return f"{self.student.full_name} - {self.exam_session.group.name}"
+        status = "Tugallangan" if self.is_completed else "Jarayonda"
+        return f"{self.student.full_name} - {self.exam_session.group.name} (#{self.attempt_number}) - {status}"
 
 
 class ExamControl(models.Model):
@@ -156,12 +167,16 @@ class ExamControl(models.Model):
     is_active = models.BooleanField(default=False)
     started_at = models.DateTimeField(null=True, blank=True)
     
+    class Meta:
+        verbose_name = "Imtihon boshqaruvi"
+        verbose_name_plural = "Imtihon boshqaruvlari"
+    
     def __str__(self):
-        return f"{self.group.name} - {'Active' if self.is_active else 'Inactive'}"
+        return f"{self.group.name} - {'Faol' if self.is_active else 'Faol emas'}"
 
 
 class ExamSession(models.Model):
-    """Eski imtihon sessiyasi"""
+    """Eski imtihon sessiyasi - backward compatibility uchun"""
     group = models.ForeignKey(Group, on_delete=models.CASCADE, related_name='exam_sessions')
     is_active = models.BooleanField(default=False)
     started_at = models.DateTimeField(null=True, blank=True)
@@ -177,7 +192,7 @@ class ExamSession(models.Model):
 
 
 class ExamResult(models.Model):
-    """Eski imtihon natijasi"""
+    """Eski imtihon natijasi - backward compatibility uchun"""
     student = models.ForeignKey(Student, on_delete=models.CASCADE, related_name='exam_results')
     exam_session = models.ForeignKey(ExamSession, on_delete=models.CASCADE, related_name='results')
     score = models.IntegerField(default=0)
@@ -205,19 +220,19 @@ class AdminPassword(models.Model):
 
 class Rules(models.Model):
     """Qonun va qoidalar"""
-    video_url = models.URLField(max_length=500, blank=True, null=True)
-    video_file = models.FileField(upload_to='rules_videos/', blank=True, null=True)
-    image1 = models.ImageField(upload_to='rules_images/', blank=True, null=True)
-    image1_title = models.CharField(max_length=200, blank=True, default="Imtihon tartibi")
-    image1_description = models.TextField(blank=True, default="Imtihon vaqtida nimalarga e'tibor berish kerak")
-    image2 = models.ImageField(upload_to='rules_images/', blank=True, null=True)
-    image2_title = models.CharField(max_length=200, blank=True, default="Baholash mezonlari")
-    image2_description = models.TextField(blank=True, default="Qanday qilib yuqori ball olish mumkin")
+    video_url = models.URLField(max_length=500, blank=True, null=True, verbose_name="Video URL")
+    video_file = models.FileField(upload_to='rules_videos/', blank=True, null=True, verbose_name="Video fayl")
+    image1 = models.ImageField(upload_to='rules_images/', blank=True, null=True, verbose_name="Rasm 1")
+    image1_title = models.CharField(max_length=200, blank=True, default="Imtihon tartibi", verbose_name="Rasm 1 sarlavhasi")
+    image1_description = models.TextField(blank=True, default="Imtihon vaqtida nimalarga e'tibor berish kerak", verbose_name="Rasm 1 tavsifi")
+    image2 = models.ImageField(upload_to='rules_images/', blank=True, null=True, verbose_name="Rasm 2")
+    image2_title = models.CharField(max_length=200, blank=True, default="Baholash mezonlari", verbose_name="Rasm 2 sarlavhasi")
+    image2_description = models.TextField(blank=True, default="Qanday qilib yuqori ball olish mumkin", verbose_name="Rasm 2 tavsifi")
     rules_text = models.TextField(default="""1. Telefon va qurilmalardan foydalanish QAT'IY MAN ETILADI
 2. Belgilangan vaqtda topshirish shart
 3. Ko'chirish qat'iyan man etiladi
 4. Texnik muammoda o'qituvchiga murojaat qiling
-5. Natijalar tekshiruvdan keyin e'lon qilinadi""")
+5. Natijalar tekshiruvdan keyin e'lon qilinadi""", verbose_name="Qoidalar matni")
     updated_at = models.DateTimeField(auto_now=True)
     
     class Meta:
