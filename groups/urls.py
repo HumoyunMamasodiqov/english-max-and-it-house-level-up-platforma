@@ -56,8 +56,8 @@ urlpatterns = [
     path('quiz/delete/<int:question_id>/', views.quiz_delete_question, name='quiz_delete_question'),
 
     # QUIZ SESSION
-    path('quiz/start/', views.start_exam_api, name='start_exam_api'),
-    path('quiz/stop/', views.stop_exam_api, name='stop_exam_api'),
+      path('quiz/start/', views.start_exam_api, name='start_exam_api'),
+      path('quiz/stop/', views.stop_exam_api, name='stop_exam_api'),
    path('quiz/check/', views.check_exam_api, name='check_exam_api'), 
      path('quiz/check-status/', views.quiz_check_status, name='quiz_check_status'),
     # STUDENT QUIZ

@@ -730,67 +730,124 @@ def quiz_delete_question(request, question_id):
 
 
 # ============ QUIZ SESSION BOSHQARUV ============
-@csrf_exempt
+from django.http import JsonResponse
+from django.views.decorators.csrf import csrf_exempt
+from django.views.decorators.http import require_http_methods
+from django.contrib.auth.decorators import login_required, user_passes_test
+from django.core.cache import cache
+from django.utils import timezone
+from .models import Group, ExamControl, ExamSession
+import json
+from datetime import datetime
+
 @login_required
-@user_passes_test(is_admin_user)
+@user_passes_test(lambda u: u.is_staff)
+@csrf_exempt
+@require_http_methods(["POST"])
 def start_exam_api(request):
-    """Testni boshlash (API)"""
-    if request.method != 'POST':
-        return JsonResponse({'success': False, 'message': 'Faqat POST so\'rov qabul qilinadi!'})
-    
+    """Testni boshlash API"""
     try:
         data = json.loads(request.body)
         group_id = data.get('group_id')
         
         if not group_id:
-            return JsonResponse({'success': False, 'message': 'Guruh ID kiritilmagan!'})
+            return JsonResponse({'success': False, 'message': 'group_id kerak'})
         
-        group = Group.objects.get(id=group_id)
+        # Guruhni tekshirish
+        try:
+            group = Group.objects.get(id=group_id)
+        except Group.DoesNotExist:
+            return JsonResponse({'success': False, 'message': 'Guruh topilmadi'})
         
-        # Guruhda savollar borligini tekshirish
-        group_categories = GroupCategory.objects.filter(group=group).values_list('category_id', flat=True)
-        questions_count = QuizQuestion.objects.filter(category_id__in=group_categories).count()
+        # ExamControl ni yangilash yoki yaratish
+        exam_control, created = ExamControl.objects.get_or_create(group=group)
+        exam_control.is_active = True
+        exam_control.started_at = timezone.now()
+        exam_control.save()
         
-        if questions_count == 0:
-            return JsonResponse({
-                'success': False, 
-                'message': 'Avval guruhga kategoriya va savollar qo\'shing!'
-            })
+        # Cache ga saqlash (MUHIM!)
+        cache_key = f'exam_active_{group_id}'
+        cache.set(cache_key, True, timeout=7200)  # 2 soat
+        cache.set(f'exam_started_{group_id}', datetime.now().strftime('%H:%M:%S'), timeout=7200)
         
-        with transaction.atomic():
-            # ExamControl ni faollashtirish
-            exam_control, created = ExamControl.objects.get_or_create(group=group)
-            exam_control.is_active = True
-            exam_control.started_at = timezone.now()
-            exam_control.save()
-            
-            # Eski sessiyalarni yopish
-            QuizSession.objects.filter(group=group, is_active=True).update(
-                is_active=False, 
-                ended_at=timezone.now()
-            )
-            
-            # Yangi sessiya yaratish
-            session = QuizSession.objects.create(
-                group=group,
-                is_active=True,
-                started_at=timezone.now(),
-                created_by=request.user
-            )
-            
-            config, created = GroupExamConfig.objects.get_or_create(group=group)
+        # Session ga ham saqlash
+        request.session[f'exam_active_{group_id}'] = True
+        request.session[f'exam_started_{group_id}'] = datetime.now().strftime('%H:%M:%S')
+        request.session.modified = True
+        
+        # ExamSession yaratish (agar kerak bo'lsa)
+        ExamSession.objects.create(
+            group=group,
+            is_active=True,
+            started_at=timezone.now(),
+            created_by=request.user
+        )
+        
+        print(f"✅ Test boshlandi - Guruh: {group.name} (ID: {group_id})")
+        print(f"   Cache: {cache.get(cache_key)}")
         
         return JsonResponse({
-            'success': True,
-            'session_id': session.id,
-            'message': f'✅ Test boshlandi! {questions_count} ta savol mavjud. Har bir talaba {config.questions_per_student} ta random savol oladi.'
+            'success': True, 
+            'message': f'Test boshlandi! Studentlar endi test topshirishi mumkin.',
+            'is_active': True
         })
-    except Group.DoesNotExist:
-        return JsonResponse({'success': False, 'message': 'Guruh topilmadi!'})
-    except json.JSONDecodeError:
-        return JsonResponse({'success': False, 'message': 'Noto\'g\'ri JSON format!'})
+        
     except Exception as e:
+        print(f"❌ Xatolik: {str(e)}")
         return JsonResponse({'success': False, 'message': f'Xatolik: {str(e)}'})
+
+@login_required
+@user_passes_test(lambda u: u.is_staff)
+@csrf_exempt
+@require_http_methods(["POST"])
+def stop_exam_api(request):
+    """Testni to'xtatish API"""
+    try:
+        data = json.loads(request.body)
+        group_id = data.get('group_id')
+        
+        if not group_id:
+            return JsonResponse({'success': False, 'message': 'group_id kerak'})
+        
+        # ExamControl ni o'chirish
+        try:
+            exam_control = ExamControl.objects.get(group_id=group_id)
+            exam_control.is_active = False
+            exam_control.save()
+        except ExamControl.DoesNotExist:
+            pass
+        
+        # Cache dan o'chirish
+        cache_key = f'exam_active_{group_id}'
+        cache.delete(cache_key)
+        cache.delete(f'exam_started_{group_id}')
+        
+        # Session dan o'chirish
+        if f'exam_active_{group_id}' in request.session:
+            del request.session[f'exam_active_{group_id}']
+        if f'exam_started_{group_id}' in request.session:
+            del request.session[f'exam_started_{group_id}']
+        request.session.modified = True
+        
+        # Aktiv ExamSession ni tugatish
+        ExamSession.objects.filter(group_id=group_id, is_active=True).update(
+            is_active=False, 
+            ended_at=timezone.now()
+        )
+        
+        print(f"⏸ Test to'xtatildi - Guruh ID: {group_id}")
+        
+        return JsonResponse({
+            'success': True, 
+            'message': f'Test to\'xtatildi! Studentlar endi test topshira olmaydi.',
+            'is_active': False
+        })
+        
+    except Exception as e:
+        print(f"❌ Xatolik: {str(e)}")
+        return JsonResponse({'success': False, 'message': f'Xatolik: {str(e)}'})
+    
+
 
 
 @csrf_exempt
@@ -834,104 +891,140 @@ def stop_exam_api(request):
     except Exception as e:
         return JsonResponse({'success': False, 'message': f'Xatolik: {str(e)}'})
 
+from django.shortcuts import render, get_object_or_404, redirect
+from django.contrib.auth.decorators import login_required
+from django.core.cache import cache
+from .models import Group, Student, QuizResult, Question
+import random
+
+
+from django.shortcuts import render, get_object_or_404, redirect
+from django.contrib.auth.decorators import login_required
+from django.core.cache import cache
+from .models import Group, Student, QuizResult, QuizQuestion, GroupExamConfig, ExamControl
+import random
+from datetime import datetime
 
 @login_required
 def quiz_take(request, group_id):
     """Test topshirish sahifasi"""
+    
+    # Studentni tekshirish
     try:
-        student = request.user.student_profile
+        student = Student.objects.get(user=request.user)
     except Student.DoesNotExist:
-        messages.error(request, 'Student profili topilmadi!')
-        return redirect('home')
-    
-    group = get_object_or_404(Group, id=group_id)
-    
-    # Talaba guruhga tegishli emasligini tekshirish
-    if student.group != group:
-        messages.error(request, 'Siz bu guruhga tegishli emassiz!')
         return redirect('student_panel')
     
-    # Test faolligini tekshirish
-    active_session = QuizSession.objects.filter(group=group, is_active=True).first()
-    exam_control, created = ExamControl.objects.get_or_create(group=group)
-    is_exam_active = active_session is not None and exam_control.is_active
+    # Guruhni tekshirish
+    group = get_object_or_404(Group, id=group_id)
     
+    # Studentning guruhini tekshirish
+    if student.group_id != group.id:
+        return redirect('student_panel')
+    
+    # ============ TEST HOLATINI TEKSHIRISH ============
+    is_exam_active = False
+    started_at = None
+    
+    # 1. Cache dan tekshirish
+    cache_key = f'exam_active_{group_id}'
+    is_exam_active = cache.get(cache_key, False)
+    started_at = cache.get(f'exam_started_{group_id}', None)
+    
+    # 2. ExamControl dan tekshirish
     if not is_exam_active:
-        context = {
+        try:
+            exam_control = ExamControl.objects.get(group=group)
+            is_exam_active = exam_control.is_active
+            if is_exam_active:
+                started_at = exam_control.started_at.strftime('%H:%M:%S') if exam_control.started_at else None
+                cache.set(cache_key, True, timeout=3600)
+        except ExamControl.DoesNotExist:
+            pass
+    
+    # ============ NATIJANI TEKSHIRISH (TO'G'RILANGAN) ============
+    has_result = False
+    result = None
+    
+    # QuizResult orqali tekshirish (group emas, quiz_session orqali)
+    try:
+        # Studentning shu guruhdagi so'nggi natijasini tekshirish
+        last_result = QuizResult.objects.filter(
+            student=student,
+            quiz_session__group=group  # quiz_session orqali group ga bog'lanish
+        ).order_by('-submitted_at').first()
+        
+        if last_result:
+            has_result = True
+            result = last_result
+    except Exception as e:
+        print(f"Natija tekshirish xatosi: {e}")
+    
+    # Agar test topshirilgan bo'lsa, natijani ko'rsatish
+    if has_result and result:
+        return render(request, 'groups/quiz_take.html', {
             'group': group,
             'student': student,
             'is_exam_active': False,
-        }
-        return render(request, 'groups/quiz_take.html', context)
+            'result': result,
+            'total_questions': result.total_questions,
+            'time_limit': 0,
+            'questions': []
+        })
     
-    # Guruh sozlamalari
-    config, created = GroupExamConfig.objects.get_or_create(group=group)
+    # Agar test faol bo'lmasa, panelga qaytarish
+    if not is_exam_active:
+        return render(request, 'groups/quiz_take.html', {
+            'group': group,
+            'student': student,
+            'is_exam_active': False,
+            'result': None,
+            'questions': [],
+            'total_questions': 0,
+            'time_limit': 0
+        })
     
-    # Urinishlar sonini tekshirish
-    completed_attempts = UserExamAttempt.objects.filter(
-        student=student, 
-        exam_session=active_session, 
-        is_completed=True
-    ).count()
+    # ============ TEST FAQAT FAOL BO'LSA BUYERGA KELADI ============
     
-    if completed_attempts >= config.max_attempts:
-        messages.warning(request, f"Siz testni {config.max_attempts} marta topshirgansiz! Yangi urinish mumkin emas.")
-        return redirect('student_panel')
+    # Sozlamalarni olish
+    try:
+        config = GroupExamConfig.objects.get(group=group)
+        questions_per_student = config.questions_per_student
+        random_order = config.random_order
+        time_limit = config.time_limit
+    except GroupExamConfig.DoesNotExist:
+        questions_per_student = 5
+        random_order = True
+        time_limit = 0
     
-    # Joriy urinishni topish yoki yaratish
-    current_attempt = UserExamAttempt.objects.filter(
-        student=student,
-        exam_session=active_session,
-        is_completed=False
-    ).first()
+    # Guruhga biriktirilgan kategoriyalardan savollarni olish
+    questions = []
+    group_categories = group.group_categories.filter(is_active=True)
     
-    if not current_attempt:
-        # Yangi urinish yaratish
-        attempt_number = completed_attempts + 1
-        current_attempt = UserExamAttempt.objects.create(
-            student=student,
-            exam_session=active_session,
-            is_completed=False,
-            selected_questions=[],
-            attempt_number=attempt_number
-        )
+    for gc in group_categories:
+        category_questions = list(QuizQuestion.objects.filter(category=gc.category))
+        questions.extend(category_questions)
     
-    # Random savol tanlash
-    group_categories = GroupCategory.objects.filter(group=group).values_list('category_id', flat=True)
-    all_questions = list(QuizQuestion.objects.filter(category_id__in=group_categories))
+    # Savollarni random tanlash
+    if len(questions) > questions_per_student:
+        questions = random.sample(questions, questions_per_student)
     
-    if len(all_questions) == 0:
-        messages.error(request, 'Bu guruh uchun savol mavjud emas!')
-        return redirect('student_panel')
+    # Savollarni aralashtirish
+    if random_order:
+        questions = random.sample(questions, len(questions))
     
-    # Savollar hali tanlanmagan bo'lsa, yangi savollar tanlash
-    if not current_attempt.selected_questions or len(current_attempt.selected_questions) == 0:
-        question_count = min(config.questions_per_student, len(all_questions))
-        selected_questions = random.sample(all_questions, question_count)
-        
-        current_attempt.selected_questions = [q.id for q in selected_questions]
-        current_attempt.save()
-        selected = selected_questions
-    else:
-        # Avval tanlangan savollarni olish
-        selected = list(QuizQuestion.objects.filter(id__in=current_attempt.selected_questions))
-        
-    # Random tartibda ko'rsatish
-    if config.random_order and selected:
-        random.shuffle(selected)
+    # Debug uchun
+    print(f"📝 Quiz take - Guruh: {group.name}, Faol: {is_exam_active}, Savollar: {len(questions)}")
     
-    context = {
+    return render(request, 'groups/quiz_take.html', {
         'group': group,
-        'active_session': active_session,
         'student': student,
-        'questions': selected,
-        'total_questions': len(selected),
-        'time_limit': config.time_limit,
         'is_exam_active': True,
-        'attempt_number': current_attempt.attempt_number,
-        'remaining_attempts': config.max_attempts - completed_attempts,
-    }
-    return render(request, 'groups/quiz_take.html', context)
+        'questions': questions,
+        'total_questions': len(questions),
+        'time_limit': time_limit,
+        'result': None
+    })
 
 
 @csrf_exempt
@@ -1620,70 +1713,120 @@ from django.views.decorators.http import require_http_methods
 from django.contrib.auth.decorators import login_required, user_passes_test
 from .models import Group, ExamSession  # Model nomlarini tekshiring
 
+
+from django.http import JsonResponse
+from django.views.decorators.csrf import csrf_exempt
+from django.views.decorators.http import require_http_methods
+from django.contrib.auth.decorators import login_required
+import json
+import logging
+
+logger = logging.getLogger(__name__)
+from django.http import JsonResponse
+from django.views.decorators.csrf import csrf_exempt
+from django.views.decorators.http import require_http_methods
+from django.contrib.auth.decorators import login_required
+from .models import Group
+import json
+from django.core.cache import cache
+from django.http import JsonResponse
+from django.views.decorators.csrf import csrf_exempt
+from django.views.decorators.http import require_http_methods
+from django.contrib.auth.decorators import login_required
+from .models import Group, ExamSession
+import json
+from datetime import datetime
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 @login_required
-@user_passes_test(lambda u: u.is_staff or u.groups.filter(name='admin').exists())
 @csrf_exempt
 @require_http_methods(["POST"])
 def quiz_check_status(request):
-    """Guruhdagi test holatini tekshirish"""
-    import json
-    from datetime import datetime
-    
+    """Test holatini tekshirish API - Student panel uchun"""
     try:
         data = json.loads(request.body)
         group_id = data.get('group_id')
         
         if not group_id:
-            return JsonResponse({
-                'success': False,
-                'error': 'Group ID kerak'
-            }, status=400)
+            return JsonResponse({'success': False, 'error': 'group_id kerak'})
         
-        # Guruhni tekshirish
-        try:
-            group = Group.objects.get(id=group_id)
-        except Group.DoesNotExist:
-            return JsonResponse({
-                'success': False,
-                'error': 'Guruh topilmadi'
-            }, status=404)
-        
-        # Test holatini tekshirish
-        # Sizning modelingizga qarab o'zgartiring
-        active_session = None
-        
-        # Agar ExamSession modeli bo'lsa:
-        if hasattr(group, 'exam_sessions'):  # yoki o'z modelingiz
-            active_session = group.exam_sessions.filter(
-                status='in_progress'  # yoki 'active'
-            ).first()
-        
-        # Yoki oddiy usul - cache orqali
-        from django.core.cache import cache
-        cache_key = f'quiz_active_{group_id}'
+        # 1. Cache dan tekshirish
+        cache_key = f'exam_active_{group_id}'
         is_active = cache.get(cache_key, False)
         
-        if active_session or is_active:
-            return JsonResponse({
-                'success': True,
-                'is_active': True,
-                'started_at': active_session.start_time.strftime('%H:%M:%S') if active_session else 'Aktiv',
-                'message': 'Test hozirda faol'
-            })
-        else:
-            return JsonResponse({
-                'success': True,
-                'is_active': False,
-                'message': 'Test faol emas'
-            })
-            
-    except json.JSONDecodeError:
+        # 2. ExamControl dan tekshirish
+        if not is_active:
+            try:
+                exam_control = ExamControl.objects.get(group_id=group_id)
+                is_active = exam_control.is_active
+                if is_active:
+                    # Cache ga qayta saqlash
+                    cache.set(cache_key, True, timeout=3600)
+            except ExamControl.DoesNotExist:
+                pass
+        
+        # 3. ExamSession dan tekshirish
+        if not is_active:
+            active_session = ExamSession.objects.filter(
+                group_id=group_id, 
+                is_active=True
+            ).first()
+            if active_session:
+                is_active = True
+                cache.set(cache_key, True, timeout=3600)
+        
+        # Vaqtni olish
+        started_at = cache.get(f'exam_started_{group_id}', None)
+        if not started_at and is_active:
+            started_at = datetime.now().strftime('%H:%M:%S')
+            cache.set(f'exam_started_{group_id}', started_at, timeout=3600)
+        
+        print(f"🔍 Holat tekshirildi - Guruh {group_id}: {'FAOL' if is_active else 'FAOL EMAS'}")
+        
         return JsonResponse({
-            'success': False,
-            'error': 'Noto\'g\'ri JSON format'
-        }, status=400)
+            'success': True,
+            'is_active': is_active,
+            'started_at': started_at,
+        })
+        
     except Exception as e:
+        print(f"❌ Holat tekshirish xatosi: {str(e)}")
         return JsonResponse({
-            'success': False,
-            'error': str(e)
+            'success': False, 
+            'error': str(e),
+            'is_active': False
         }, status=500)
+
+
+
+
+
+
+
+
+
+
+
+

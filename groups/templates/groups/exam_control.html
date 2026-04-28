@@ -105,45 +105,113 @@
 
 <script>
 const csrftoken = '{{ csrf_token }}';
+const groupId = {{ group.id }};
 
-document.getElementById('startBtn').addEventListener('click', function() {
-    fetch('{% url "start_exam_api" %}', {
+// Holatni tekshirish funksiyasi
+function checkExamStatus() {
+    fetch('/quiz/check-status/', {
         method: 'POST',
         headers: {
             'Content-Type': 'application/json',
             'X-CSRFToken': csrftoken
         },
-        body: JSON.stringify({ group_id: {{ group.id }} })
+        body: JSON.stringify({ group_id: groupId })
     })
     .then(response => response.json())
     .then(data => {
-        alert(data.message);
-        if (data.success) location.reload();
+        console.log('Status:', data);
+        if (data.success) {
+            const statusElement = document.querySelector('.text-green-600, .text-red-600');
+            if (data.is_active) {
+                if (statusElement) {
+                    statusElement.innerHTML = '✅ TEST FAOL';
+                    statusElement.className = 'text-green-600 font-medium';
+                }
+            } else {
+                if (statusElement) {
+                    statusElement.innerHTML = '⛔ TEST TO\'XTATILGAN';
+                    statusElement.className = 'text-red-600 font-medium';
+                }
+            }
+        }
     })
-    .catch(error => alert('Xatolik: ' + error));
+    .catch(error => console.error('Xatolik:', error));
+}
+
+// START tugmasi
+document.getElementById('startBtn').addEventListener('click', function() {
+    const btn = this;
+    const originalText = btn.innerHTML;
+    btn.innerHTML = '<i class="fas fa-spinner fa-spin mr-2"></i> Boshlanmoqda...';
+    btn.disabled = true;
+    
+    fetch('/quiz/start/', {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json',
+            'X-CSRFToken': csrftoken
+        },
+        body: JSON.stringify({ group_id: groupId })
+    })
+    .then(response => response.json())
+    .then(data => {
+        if (data.success) {
+            alert('✅ ' + data.message);
+            location.reload();
+        } else {
+            alert('❌ ' + data.message);
+            btn.innerHTML = originalText;
+            btn.disabled = false;
+        }
+    })
+    .catch(error => {
+        alert('❌ Xatolik: ' + error);
+        btn.innerHTML = originalText;
+        btn.disabled = false;
+    });
 });
 
+// STOP tugmasi
 document.getElementById('stopBtn').addEventListener('click', function() {
-    fetch('{% url "stop_exam_api" %}', {
+    const btn = this;
+    const originalText = btn.innerHTML;
+    btn.innerHTML = '<i class="fas fa-spinner fa-spin mr-2"></i> To\'xtatilmoqda...';
+    btn.disabled = true;
+    
+    fetch('/quiz/stop/', {
         method: 'POST',
         headers: {
             'Content-Type': 'application/json',
             'X-CSRFToken': csrftoken
         },
-        body: JSON.stringify({ group_id: {{ group.id }} })
+        body: JSON.stringify({ group_id: groupId })
     })
     .then(response => response.json())
     .then(data => {
-        alert(data.message);
-        if (data.success) location.reload();
+        if (data.success) {
+            alert('⏸ ' + data.message);
+            location.reload();
+        } else {
+            alert('❌ ' + data.message);
+            btn.innerHTML = originalText;
+            btn.disabled = false;
+        }
     })
-    .catch(error => alert('Xatolik: ' + error));
+    .catch(error => {
+        alert('❌ Xatolik: ' + error);
+        btn.innerHTML = originalText;
+        btn.disabled = false;
+    });
 });
 
 function copyLink() {
     const link = 'http://{{ request.get_host }}{% url "quiz_take" group.id %}';
     navigator.clipboard.writeText(link);
-    alert('Link nusxalandi!');
+    alert('✅ Link nusxalandi!');
 }
+
+// Har 10 sekundda holatni tekshirish
+setInterval(checkExamStatus, 10000);
+checkExamStatus();
 </script>
 {% endblock %}

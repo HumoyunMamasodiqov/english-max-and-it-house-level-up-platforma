@@ -15,6 +15,13 @@ class Group(models.Model):
     
     def __str__(self):
         return self.name
+    
+    def get_exam_config(self):
+        """Imtihon sozlamalarini olish"""
+        try:
+            return self.exam_config
+        except:
+            return None
 
 
 class Student(models.Model):
@@ -79,6 +86,11 @@ class QuizQuestion(models.Model):
     
     def __str__(self):
         return f"[{self.category.name}] {self.question_text[:50]}..."
+    
+    @property
+    def blank_text(self):
+        """___ bilan almashtirilgan matn"""
+        return self.question_text
 
 
 class QuizSession(models.Model):
@@ -111,7 +123,6 @@ class QuizResult(models.Model):
         verbose_name = "Quiz natijasi"
         verbose_name_plural = "Quiz natijalari"
         ordering = ['-submitted_at']
-        # unique_together ni olib tashladik - talaba bir necha marta topshirishi mumkin
     
     def __str__(self):
         return f"{self.student.full_name} - {self.score}/{self.total_questions} (#{self.attempt_number})"
@@ -241,3 +252,18 @@ class Rules(models.Model):
     
     def __str__(self):
         return "Qonun va qoidalar"
+    
+    def get_video_url(self):
+        """YouTube URL ni embed URL ga o'zgartirish"""
+        if self.video_url:
+            if 'youtube.com/watch?v=' in self.video_url:
+                video_id = self.video_url.split('v=')[1].split('&')[0]
+                return f"https://www.youtube.com/embed/{video_id}"
+            elif 'youtu.be/' in self.video_url:
+                video_id = self.video_url.split('youtu.be/')[1].split('?')[0]
+                return f"https://www.youtube.com/embed/{video_id}"
+        return self.video_url
+
+
+# Backward compatibility uchun alias (views.py da Question import qilinsa ishlashi uchun)
+Question = QuizQuestion
