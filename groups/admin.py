@@ -1,10 +1,126 @@
-# groups/admin.py
+# groups/admin.py - TO'G'IRILGAN VERSIYA
+
 from django.contrib import admin
 from django.contrib.auth.admin import UserAdmin
 from django.contrib.auth.models import User
-from .models import Group, Student, ExamSession, ExamResult, ExamControl, AdminPassword, Rules
+from .models import (
+    Group, Student, ExamSession, ExamResult, ExamControl, 
+    AdminPassword, Rules, Category, QuizQuestion
+)
+
+# forms.py dan import
+from django import forms
+from .models import QuizQuestion
+
+class QuizQuestionForm(forms.ModelForm):
+    class Meta:
+        model = QuizQuestion
+        fields = ['category', 'question_type', 'question_text', 'correct_answer', 'scrambled_words', 'correct_sentence']
+        widgets = {
+            'question_text': forms.Textarea(attrs={'rows': 3, 'class': 'w-full border rounded p-2'}),
+            'correct_answer': forms.TextInput(attrs={'class': 'w-full border rounded p-2'}),
+            'scrambled_words': forms.Textarea(attrs={'rows': 2, 'class': 'w-full border rounded p-2 font-mono', 'placeholder': "he / go / school / I / to"}),
+            'correct_sentence': forms.TextInput(attrs={'class': 'w-full border rounded p-2', 'placeholder': "I go to school"}),
+        }
+    
+    def clean(self):
+        cleaned_data = super().clean()
+        question_type = cleaned_data.get('question_type')
+        
+        if question_type == 'sentence_arrangement':
+            if not cleaned_data.get('scrambled_words'):
+                self.add_error('scrambled_words', 'So\'zlarni kiriting!')
+            if not cleaned_data.get('correct_sentence'):
+                self.add_error('correct_sentence', 'To\'g\'ri gapni kiriting!')
+        
+        return cleaned_data
 
 
+# ============ KATEGORIYA ADMIN ============
+@admin.register(Category)
+class CategoryAdmin(admin.ModelAdmin):
+    """Kategoriya admin paneli"""
+    list_display = ['id', 'name', 'description_preview', 'question_count', 'created_at']
+    list_filter = ['created_at']
+    search_fields = ['name', 'description']
+    ordering = ['name']
+    
+    fieldsets = (
+        ('Asosiy ma\'lumotlar', {
+            'fields': ('name', 'description')
+        }),
+        ('Vaqt', {
+            'fields': ('created_at',),
+            'classes': ('collapse',)
+        }),
+    )
+    
+    def description_preview(self, obj):
+        if obj.description:
+            return obj.description[:50] + '...' if len(obj.description) > 50 else obj.description
+        return '-'
+    description_preview.short_description = 'Tavsif'
+    
+    def question_count(self, obj):
+        return obj.quiz_questions.count()
+    question_count.short_description = 'Savollar soni'
+
+
+# ============ SAVOL ADMIN - TO'G'IRILGAN ============
+@admin.register(QuizQuestion)
+class QuizQuestionAdmin(admin.ModelAdmin):
+    """Savol admin paneli"""
+    form = QuizQuestionForm
+    # list_display ga question_type qo'shildi
+    list_display = ['id', 'category', 'question_type', 'question_type_badge', 'preview', 'created_at']
+    list_filter = ['category', 'question_type', 'created_at']
+    search_fields = ['question_text', 'correct_answer', 'correct_sentence', 'scrambled_words']
+    # list_editable o'chirildi (yoki list_display ga qo'shilgan maydonlar bilan ishlatish mumkin)
+    # list_editable = ['question_type']  # BU QATOR O'CHIRILDI
+    list_per_page = 20
+    
+    fieldsets = (
+        ('Asosiy ma\'lumotlar', {
+            'fields': ('category', 'question_type')
+        }),
+        ('Fill Blank (Bo\'sh joy to\'ldirish)', {
+            'fields': ('question_text', 'correct_answer'),
+            'classes': ('collapse',),
+            'description': 'Savol matnida ___ bilan bo\'sh joy belgilang. Masalan: I ___ to school every day.'
+        }),
+        ('Sentence Arrangement (So\'zlarni tartibga solish)', {
+            'fields': ('scrambled_words', 'correct_sentence'),
+            'classes': ('collapse',),
+            'description': 'So\'zlarni / bilan ajrating. Masalan: he / go / school / I / to'
+        }),
+    )
+    
+    def question_type_badge(self, obj):
+        if obj.question_type == 'fill_blank':
+            return '📝 Bo\'sh joy'
+        elif obj.question_type == 'sentence_arrangement':
+            return '🔀 So\'z tartibi'
+        else:
+            return '❓ Boshqa'
+    question_type_badge.short_description = 'Savol turi belgisi'
+    
+    def preview(self, obj):
+        if obj.question_type == 'fill_blank':
+            text = obj.question_text[:60] if obj.question_text else '-'
+            return f'📝 {text}'
+        else:
+            text = obj.correct_sentence[:60] if obj.correct_sentence else '-'
+            words = obj.get_scrambled_words_list() if hasattr(obj, 'get_scrambled_words_list') else []
+            words_str = ' / '.join(words[:5]) + ('...' if len(words) > 5 else '')
+            return f'🔀 {text}<br><span style="color:gray;font-size:11px;">🔀 {words_str}</span>'
+    preview.short_description = 'Savol'
+    preview.allow_tags = True
+    
+    def get_queryset(self, request):
+        return super().get_queryset(request).select_related('category')
+
+
+# ============ STUDENT INLINE ============
 class StudentInline(admin.StackedInline):
     """Student profilini User admin panelida ko'rsatish"""
     model = Student
@@ -15,6 +131,7 @@ class StudentInline(admin.StackedInline):
     autocomplete_fields = ['group']
 
 
+# ============ CUSTOM USER ADMIN ============
 class CustomUserAdmin(UserAdmin):
     """Foydalanuvchi admin panelini sozlash"""
     inlines = [StudentInline]
@@ -45,10 +162,11 @@ admin.site.unregister(User)
 admin.site.register(User, CustomUserAdmin)
 
 
+# ============ GROUP ADMIN ============
 @admin.register(Group)
 class GroupAdmin(admin.ModelAdmin):
     """Guruh admin paneli"""
-    list_display = ['name', 'teacher', 'student_count', 'created_at']
+    list_display = ['name', 'teacher', 'student_count', 'category_count', 'created_at']
     list_filter = ['created_at']
     search_fields = ['name', 'teacher']
     ordering = ['-created_at']
@@ -68,8 +186,13 @@ class GroupAdmin(admin.ModelAdmin):
         return obj.students.count()
     student_count.short_description = 'O\'quvchilar soni'
     student_count.admin_order_field = 'students__count'
+    
+    def category_count(self, obj):
+        return obj.group_categories.filter(is_active=True).count()
+    category_count.short_description = 'Kategoriyalar soni'
 
 
+# ============ STUDENT ADMIN ============
 @admin.register(Student)
 class StudentAdmin(admin.ModelAdmin):
     """Student admin paneli"""
@@ -114,6 +237,7 @@ class StudentAdmin(admin.ModelAdmin):
     created_at.admin_order_field = 'user__date_joined'
 
 
+# ============ EXAM SESSION ADMIN ============
 @admin.register(ExamSession)
 class ExamSessionAdmin(admin.ModelAdmin):
     """Imtihon sessiyasi admin paneli"""
@@ -135,7 +259,6 @@ class ExamSessionAdmin(admin.ModelAdmin):
     )
     
     def duration(self, obj):
-        """Imtihon davomiyligini hisoblash"""
         if obj.started_at:
             end = obj.ended_at or obj.started_at
             delta = end - obj.started_at
@@ -145,6 +268,7 @@ class ExamSessionAdmin(admin.ModelAdmin):
     duration.short_description = 'Davomiyligi'
 
 
+# ============ EXAM RESULT ADMIN ============
 @admin.register(ExamResult)
 class ExamResultAdmin(admin.ModelAdmin):
     """Imtihon natijasi admin paneli"""
@@ -172,6 +296,7 @@ class ExamResultAdmin(admin.ModelAdmin):
     answer_count.short_description = 'Javoblar soni'
 
 
+# ============ EXAM CONTROL ADMIN ============
 @admin.register(ExamControl)
 class ExamControlAdmin(admin.ModelAdmin):
     """Imtihon boshqaruvi admin paneli"""
@@ -198,6 +323,7 @@ class ExamControlAdmin(admin.ModelAdmin):
     status_badge.short_description = 'Holat'
 
 
+# ============ ADMIN PASSWORD ADMIN ============
 @admin.register(AdminPassword)
 class AdminPasswordAdmin(admin.ModelAdmin):
     """Admin parollari admin paneli (faqat superuser ko'radi)"""
@@ -242,6 +368,7 @@ class AdminPasswordAdmin(admin.ModelAdmin):
         return request.user.is_superuser
 
 
+# ============ RULES ADMIN ============
 @admin.register(Rules)
 class RulesAdmin(admin.ModelAdmin):
     """Qonun va qoidalar admin paneli"""
@@ -308,18 +435,11 @@ class RulesAdmin(admin.ModelAdmin):
 
 # Admin panel sarlavhasini o'zgartirish
 admin.site.site_header = 'Guruhlar Boshqaruvi - Admin Panel'
-admin.site.site_title = 'Guruhlar Admin'    
+admin.site.site_title = 'Guruhlar Admin'
 admin.site.index_title = 'Boshqaruv paneliga xush kelibsiz'
 
 
 # ============ QO'SHIMCHA ACTIONLAR ============
-
-@admin.action(description='Tanlangan guruhlarni faollashtirish')
-def activate_groups(modeladmin, request, queryset):
-    """Guruhlarni faollashtirish (agar qo'shimcha maydon bo'lsa)"""
-    updated = queryset.update(is_active=True) if hasattr(Group, 'is_active') else 0
-    modeladmin.message_user(request, f'{updated} ta guruh faollashtirildi.')
-
 
 @admin.action(description='Tanlangan imtihonlarni to\'xtatish')
 def stop_exam_sessions(modeladmin, request, queryset):
@@ -328,8 +448,30 @@ def stop_exam_sessions(modeladmin, request, queryset):
     modeladmin.message_user(request, f'{updated} ta imtihon to\'xtatildi.')
 
 
-# Agar Group modelida is_active maydoni bo'lsa (ixtiyoriy)
-# GroupAdmin.actions = [activate_groups]
-
 # ExamSession adminiga action qo'shish
 ExamSessionAdmin.actions = [stop_exam_sessions]
+
+
+# ============ CATEGORY VA QUIZ QUESTION UCHUN QO'SHIMCHA ACTIONLAR ============
+
+@admin.action(description='Tanlangan savollarni o\'chirish')
+def delete_selected_questions(modeladmin, request, queryset):
+    deleted = queryset.count()
+    queryset.delete()
+    modeladmin.message_user(request, f'{deleted} ta savol o\'chirildi.')
+
+
+@admin.action(description='Tanlangan savollarni "Fill Blank" ga o\'zgartirish')
+def change_to_fill_blank(modeladmin, request, queryset):
+    updated = queryset.update(question_type='fill_blank')
+    modeladmin.message_user(request, f'{updated} ta savol "Bo\'sh joy" turiga o\'zgartirildi.')
+
+
+@admin.action(description='Tanlangan savollarni "Sentence Arrangement" ga o\'zgartirish')
+def change_to_sentence_arrangement(modeladmin, request, queryset):
+    updated = queryset.update(question_type='sentence_arrangement')
+    modeladmin.message_user(request, f'{updated} ta savol "So\'z tartibi" turiga o\'zgartirildi.')
+
+
+# QuizQuestion adminiga actionlar qo'shish
+QuizQuestionAdmin.actions = [delete_selected_questions, change_to_fill_blank, change_to_sentence_arrangement]

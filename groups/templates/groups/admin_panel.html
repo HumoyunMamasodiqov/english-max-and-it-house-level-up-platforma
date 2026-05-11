@@ -69,12 +69,21 @@
                                 </div>
                             </a>
                             
-                            <a href="{% url 'quiz_admin' %}" class="flex items-center px-4 py-3 text-sm text-gray-700 hover:bg-gray-50 transition group">
+                            <a href="{% url 'admin_question_list' %}" class="flex items-center px-4 py-3 text-sm text-gray-700 hover:bg-gray-50 transition group">
                                 <div class="w-8 h-8 bg-gray-100 rounded-lg flex items-center justify-center mr-3 group-hover:bg-gray-200 transition">
                                     <i class="fas fa-question-circle text-gray-500 text-sm"></i>
                                 </div>
                                 <div>
                                     <p class="font-medium">Quiz Boshqaruvi</p>
+                                    <p class="text-xs text-gray-400">Savollarni boshqarish</p>
+                                </div>
+                            </a>
+                                  <a href="{% url 'admin_question_add' %}" class="flex items-center px-4 py-3 text-sm text-gray-700 hover:bg-gray-50 transition group">
+                                <div class="w-8 h-8 bg-gray-100 rounded-lg flex items-center justify-center mr-3 group-hover:bg-gray-200 transition">
+                                    <i class="fas fa-question-circle text-gray-500 text-sm"></i>
+                                </div>
+                                <div>
+                                    <p class="font-medium">Quiz Qoshish</p>
                                     <p class="text-xs text-gray-400">Savollarni boshqarish</p>
                                 </div>
                             </a>
@@ -143,7 +152,8 @@
                     </div>
                 </div>
             </div>
-            
+            <!-- admin_panel.html yoki base.html ga qo'shing -->
+
             <!-- Adminlar -->
             <div class="bg-white rounded-xl border border-gray-200 p-6 hover:shadow-md transition duration-200">
                 <div class="flex items-center justify-between">
@@ -320,7 +330,7 @@
         </div>
     </a>
     
-    <a href="{% url 'quiz_admin' %}" class="bg-white rounded-xl border border-gray-200 p-5 hover:shadow-md transition group">
+    <a href="{% url 'admin_question_add' %}" class="bg-white rounded-xl border border-gray-200 p-5 hover:shadow-md transition group">
         <div class="flex items-center space-x-4">
             <div class="w-10 h-10 bg-gray-100 rounded-xl flex items-center justify-center group-hover:bg-gray-200 transition">
                 <i class="fas fa-question-circle text-gray-600 text-lg"></i>

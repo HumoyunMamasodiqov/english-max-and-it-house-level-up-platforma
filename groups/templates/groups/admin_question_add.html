@@ -1,0 +1,209 @@
+{% extends 'groups/base.html' %} {% block title %}Yangi savol qo'shish{% endblock %} {% block content %}
+<div class="min-h-screen bg-gray-50 py-8">
+  <div class="max-w-3xl mx-auto px-4">
+    <div class="mb-6">
+      <a
+        href="{% url 'admin_question_list' %}"
+        class="text-gray-500 hover:text-gray-700 text-sm"
+      >
+        <i class="fas fa-arrow-left mr-1"></i> Savollar ro'yxatiga qaytish
+      </a>
+      <h1 class="text-2xl font-bold text-gray-900 mt-2">
+        Yangi savol qo'shish
+      </h1>
+      <p class="text-gray-500 text-sm">
+        Savol turini tanlang va ma'lumotlarni to'ldiringy
+      </p>
+    </div>
+
+    <form
+      method="post"
+      class="bg-white rounded-lg shadow-sm border border-gray-200 p-6"
+    >
+      {% csrf_token %}
+
+      <!-- Kategoriya tanlash -->
+      <div class="mb-5">
+        <label class="block text-sm font-medium text-gray-700 mb-2">
+          Kategoriya <span class="text-red-500">*</span>
+        </label>
+        <select
+          name="category"
+          required
+          class="w-full border border-gray-300 rounded-lg px-3 py-2 focus:outline-none focus:ring-2 focus:ring-blue-500"
+        >
+          <option value="">-- Kategoriya tanlang --</option>
+          {% for cat in categories %}
+          <option value="{{ cat.id }}">{{ cat.name }}</option>
+          {% endfor %}
+        </select>
+        {% if not categories %}
+        <p class="text-xs text-red-500 mt-1">
+          <i class="fas fa-exclamation-triangle mr-1"></i>
+          Avval
+          <a href="{% url 'category_list' %}" class="text-blue-500"
+            >kategoriya</a
+          >
+          yarating!
+        </p>
+        {% endif %}
+      </div>
+
+      <!-- Savol turi -->
+      <div class="mb-5">
+        <label class="block text-sm font-medium text-gray-700 mb-2">
+          Savol turi <span class="text-red-500">*</span>
+        </label>
+        <div class="grid grid-cols-2 gap-3">
+          <label
+            class="flex items-center p-3 border border-gray-200 rounded-lg cursor-pointer hover:bg-gray-50"
+          >
+            <input
+              type="radio"
+              name="question_type"
+              value="fill_blank"
+              class="mr-3"
+              required
+            />
+            <div>
+              <div class="font-medium text-gray-800">
+                📝 Bo'sh joy to'ldirish
+              </div>
+              <div class="text-xs text-gray-500">
+                Savol matnida ___ bo'lgan joy
+              </div>
+            </div>
+          </label>
+          <label
+            class="flex items-center p-3 border border-gray-200 rounded-lg cursor-pointer hover:bg-gray-50"
+          >
+            <input
+              type="radio"
+              name="question_type"
+              value="sentence_arrangement"
+              class="mr-3"
+            />
+            <div>
+              <div class="font-medium text-gray-800">
+                🔀 So'zlarni tartibga solish
+              </div>
+              <div class="text-xs text-gray-500">
+                Chalkashtirilgan so'zlarni tartiblash
+              </div>
+            </div>
+          </label>
+        </div>
+      </div>
+
+      <!-- Fill blank maydonlari -->
+      <div id="fillBlankFields" style="display: none">
+        <div class="mb-5">
+          <label class="block text-sm font-medium text-gray-700 mb-2">
+            Savol matni <span class="text-red-500">*</span>
+          </label>
+          <textarea
+            name="question_text"
+            rows="4"
+            class="w-full border border-gray-300 rounded-lg px-3 py-2 focus:outline-none focus:ring-2 focus:ring-blue-500"
+            placeholder="Masalan: I ___ to school every day. The cat is ___ the table."
+          ></textarea>
+          <p class="text-xs text-gray-500 mt-1">
+            💡 ___ bilan bo'sh joyni belgilang
+          </p>
+        </div>
+
+        <div class="mb-5">
+          <label class="block text-sm font-medium text-gray-700 mb-2">
+            To'g'ri javob <span class="text-red-500">*</span>
+          </label>
+          <input
+            type="text"
+            name="correct_answer"
+            class="w-full border border-gray-300 rounded-lg px-3 py-2 focus:outline-none focus:ring-2 focus:ring-blue-500"
+            placeholder="Masalan: go, on"
+          />
+          <p class="text-xs text-gray-500 mt-1">
+            💡 Agar bir nechta bo'sh joy bo'lsa, javoblarni vergul bilan
+            ajrating
+          </p>
+        </div>
+      </div>
+
+      <!-- Sentence arrangement maydonlari -->
+      <div id="sentenceArrangementFields" style="display: none">
+        <div class="mb-5">
+          <label class="block text-sm font-medium text-gray-700 mb-2">
+            Chalkashtirilgan so'zlar <span class="text-red-500">*</span>
+          </label>
+          <textarea
+            name="scrambled_words"
+            rows="3"
+            class="w-full border border-gray-300 rounded-lg px-3 py-2 font-mono focus:outline-none focus:ring-2 focus:ring-blue-500"
+            placeholder="Masalan:&#10;he / go / school / I / to"
+          ></textarea>
+          <p class="text-xs text-gray-500 mt-1">
+            💡 So'zlarni <code class="bg-gray-100 px-1">/</code> bilan ajrating
+          </p>
+        </div>
+
+        <div class="mb-5">
+          <label class="block text-sm font-medium text-gray-700 mb-2">
+            To'g'ri gap <span class="text-red-500">*</span>
+          </label>
+          <input
+            type="text"
+            name="correct_sentence"
+            class="w-full border border-gray-300 rounded-lg px-3 py-2 focus:outline-none focus:ring-2 focus:ring-blue-500"
+            placeholder="Masalan: I go to school"
+          />
+          <p class="text-xs text-gray-500 mt-1">
+            💡 So'zlar to'g'ri tartibda yozilgan gap
+          </p>
+        </div>
+      </div>
+
+      <div class="mt-6 flex gap-3">
+        <button
+          type="submit"
+          class="bg-blue-600 hover:bg-blue-700 text-white px-6 py-2 rounded-lg transition"
+        >
+          <i class="fas fa-save mr-2"></i> Saqlash
+        </button>
+        <a
+          href="{% url 'admin_question_list' %}"
+          class="bg-gray-200 hover:bg-gray-300 text-gray-700 px-6 py-2 rounded-lg transition"
+        >
+          Bekor qilish
+        </a>
+      </div>
+    </form>
+  </div>
+</div>
+
+<script>
+  document.querySelectorAll('input[name="question_type"]').forEach((radio) => {
+    radio.addEventListener("change", function () {
+      const fillBlankDiv = document.getElementById("fillBlankFields");
+      const sentenceDiv = document.getElementById("sentenceArrangementFields");
+
+      if (this.value === "fill_blank") {
+        fillBlankDiv.style.display = "block";
+        sentenceDiv.style.display = "none";
+      } else if (this.value === "sentence_arrangement") {
+        fillBlankDiv.style.display = "none";
+        sentenceDiv.style.display = "block";
+      }
+    });
+  });
+
+  // Agar radio tanlanmagan bo'lsa, birinchi radio ni tanlash
+  const radios = document.querySelectorAll('input[name="question_type"]');
+  if (
+    radios.length > 0 &&
+    !document.querySelector('input[name="question_type"]:checked')
+  ) {
+    radios[0].checked = true;
+    radios[0].dispatchEvent(new Event("change"));
+  }
+</script>
+{% endblock %}

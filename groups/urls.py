@@ -39,16 +39,18 @@ urlpatterns = [
     path('user/add/', views.student_add, name='student_add'),
     path('user/edit/<int:pk>/', views.student_edit, name='student_edit'),
     path('user/delete/<int:pk>/', views.student_delete, name='student_delete'),
+    path('users/bulk-delete/', views.student_bulk_delete, name='student_bulk_delete'),
 
     # STUDENT PANEL
     path('student-panel/', views.student_panel, name='student_panel'),
-  path('users/bulk-delete/', views.student_bulk_delete, name='student_bulk_delete'),
+
     # ADMIN BOSHQARUVI
     path('make-admin/', views.make_admin, name='make_admin'),
     path('admin-list/', views.admin_list, name='admin_list'),
     path('admin-add/', views.admin_add, name='admin_add'),
     path('admin-edit/<int:admin_id>/', views.admin_edit, name='admin_edit'),
     path('admin-delete/<int:user_id>/', views.admin_delete, name='admin_delete'),
+
     # QUIZ ADMIN
     path('quiz/admin/', views.quiz_admin, name='quiz_admin'),
     path('quiz/add/', views.quiz_add_question, name='quiz_add_question'),
@@ -56,10 +58,11 @@ urlpatterns = [
     path('quiz/delete/<int:question_id>/', views.quiz_delete_question, name='quiz_delete_question'),
 
     # QUIZ SESSION
-      path('quiz/start/', views.start_exam_api, name='start_exam_api'),
-      path('quiz/stop/', views.stop_exam_api, name='stop_exam_api'),
-   path('quiz/check/', views.check_exam_api, name='check_exam_api'), 
-     path('quiz/check-status/', views.quiz_check_status, name='quiz_check_status'),
+    path('quiz/start/', views.start_exam_api, name='start_exam_api'),
+    path('quiz/stop/', views.stop_exam_api, name='stop_exam_api'),
+    path('quiz/check/', views.check_exam_api, name='check_exam_api'), 
+    path('quiz/check-status/', views.quiz_check_status, name='quiz_check_status'),
+
     # STUDENT QUIZ
     path('quiz/take/<int:group_id>/', views.quiz_take, name='quiz_take'),
     path('quiz/submit/', views.quiz_submit, name='quiz_submit'),
@@ -80,4 +83,10 @@ urlpatterns = [
     path('api/admin-update/', views.admin_update, name='admin_update'),
     path('api/admin-get-plain-password/<int:admin_id>/', views.admin_get_plain_password, name='admin_get_plain_password'),
     path('api/admin-update-password/', views.admin_update_password, name='admin_update_password'),
+
+    # ============ SAVOLLAR UCHUN MAXSUS SAHIFALAR (admin/ dan boshqa nom bilan) ============
+    path('questions-list/', views.admin_question_list, name='admin_question_list'),
+    path('questions-add/', views.admin_question_add, name='admin_question_add'),
+    path('questions-edit/<int:pk>/', views.admin_question_edit, name='admin_question_edit'),
+    path('questions-delete/<int:pk>/', views.admin_question_delete, name='admin_question_delete'),
 ]

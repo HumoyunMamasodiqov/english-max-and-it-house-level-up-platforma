@@ -267,3 +267,60 @@ class Rules(models.Model):
 
 # Backward compatibility uchun alias (views.py da Question import qilinsa ishlashi uchun)
 Question = QuizQuestion
+
+
+
+
+
+
+
+# models.py ga qo'shimcha
+
+class QuestionType(models.TextChoices):
+    """Savol turlari"""
+    FILL_BLANK = 'fill_blank', 'Bosh joy toldirish'
+    SENTENCE_ARRANGEMENT = 'sentence_arrangement', 'So\'zlarni tartibga solish'
+    MULTIPLE_CHOICE = 'multiple_choice', 'Test varianti'
+    TRUE_FALSE = 'true_false', 'To\'g\'ri/Noto\'g\'ri'
+
+
+class QuizQuestion(models.Model):
+    """Test savollari - YANGILANGAN"""
+    category = models.ForeignKey(Category, on_delete=models.CASCADE, related_name='quiz_questions', verbose_name="Kategoriya")
+    question_type = models.CharField(
+        max_length=30, 
+        choices=QuestionType.choices, 
+        default=QuestionType.FILL_BLANK,
+        verbose_name="Savol turi"
+    )
+    question_text = models.TextField(verbose_name="Savol matni", blank=True, null=True)
+    correct_answer = models.CharField(max_length=500, verbose_name="To'g'ri javob", blank=True, null=True)
+    
+    # SENTENCE ARRANGEMENT uchun yangi maydonlar
+    scrambled_words = models.TextField(
+        blank=True, null=True, 
+        verbose_name="Chalkashtirilgan so'zlar (sentence arrangement)",
+        help_text="Masalan: he / go / school / I / to"
+    )
+    correct_sentence = models.TextField(
+        blank=True, null=True,
+        verbose_name="To'g'ri gap (sentence arrangement)",
+        help_text="Masalan: I go to school"
+    )
+    
+    created_at = models.DateTimeField(auto_now_add=True)
+    
+    class Meta:
+        verbose_name = "Savol"
+        verbose_name_plural = "Savollar"
+        ordering = ['category__name', 'id']
+    
+    def __str__(self):
+        type_label = dict(QuestionType.choices).get(self.question_type, 'Noma\'lum')
+        return f"[{type_label}] {self.question_text[:50] if self.question_text else self.correct_sentence[:50]}..."
+    
+    def get_scrambled_words_list(self):
+        """Chalkashtirilgan so'zlar ro'yxatini qaytaradi"""
+        if self.scrambled_words:
+            return [w.strip() for w in self.scrambled_words.split('/') if w.strip()]
+        return []
