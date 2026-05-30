@@ -138,6 +138,19 @@
                                 <input type="radio" name="question_type" value="writing" class="mr-1">
                                 <span class="text-sm">✍️ Yozma ish (Writing)</span>
                             </label>
+                            <label class="flex items-center gap-2 p-3 border border-gray-200 cursor-pointer hover:bg-gray-50">
+                                <input type="radio" name="question_type" value="speaking" class="mr-1">
+                                <span class="text-sm">🎤 Og'zaki (Speaking)</span>
+                            </label>
+                        </div>
+                    </div>
+
+                    <!-- Speaking fields -->
+                    <div id="speakingFields" class="px-6 py-5 border-b border-gray-100" style="display: none;">
+                        <div class="mb-5">
+                            <label class="block text-sm font-medium text-gray-700 mb-2">Mavzu <span class="text-red-500">*</span></label>
+                            <input type="text" name="s_topic" class="w-full border border-gray-300 rounded px-4 py-2.5 text-sm focus:border-black focus:outline-none" placeholder="Masalan: Introduce yourself">
+                            <p class="text-xs text-gray-400 mt-1">Studentlarga ko'rinmaydi, faqat o'qituvchi uchun</p>
                         </div>
                     </div>
 
@@ -551,7 +564,8 @@
                         this.value === 'matching' ? 'matchingFields' :
                         this.value === 'cloze_multiple_blanks' ? 'clozeMultipleBlanksFields' :
                         this.value === 'complete_the_words' ? 'completeTheWordsFields' :
-                        this.value === 'writing' ? 'writingFields' : '';
+                        this.value === 'writing' ? 'writingFields' :
+                        this.value === 'speaking' ? 'speakingFields' : '';
                 if (id) document.getElementById(id).style.display = 'block';
             });
         });

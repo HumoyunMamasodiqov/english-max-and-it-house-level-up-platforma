@@ -112,17 +112,22 @@ urlpatterns = [
     # WRITING (Yozma ish) BAHOLASH
     path('writing/review/<int:group_id>/', views.admin_writing_review, name='admin_writing_review'),
     path('writing/grade/<int:result_id>/<int:question_id>/', views.admin_writing_grade_api, name='admin_writing_grade_api'),
-    # QUIZ SUBMIT uchun URL (muhim!)
     path('quiz/pause/', views.pause_exam_api, name='pause_exam_api'),
     path('quiz/resume/', views.resume_exam_api, name='resume_exam_api'),
-      path('quiz/admin-questions/delete/<int:pk>/', views.admin_question_delete_api, name='admin_question_delete_api'),
-# STUDENT QUIZ
-  path('offline/', views.offline_view, name='offline'),
+    path('quiz/admin-questions/delete/<int:pk>/', views.admin_question_delete_api, name='admin_question_delete_api'),
+    path('offline/', views.offline_view, name='offline'),
+    path('admin/questions/delete/<int:pk>/', views.admin_question_delete, name='admin_question_delete'),
+    path('quiz/get-remaining-time/', views.get_remaining_time_api, name='get_remaining_time_api'),
+    path('quiz-submit/', views.quiz_submit, name='quiz_submit'),
 
+    # SPEAKING (Og'zaki) BAHOLASH
+    path('speaking/review/<int:group_id>/', views.speaking_review, name='speaking_review'),
+    path('speaking/save-score/', views.speaking_save_score_api, name='speaking_save_score_api'),
 
-path('admin/questions/delete/<int:pk>/', views.admin_question_delete, name='admin_question_delete'),
+    # NATIJALARNI EXPORT
+    path('quiz/export-csv/<int:group_id>/', views.export_results_csv, name='export_results_csv'),
+    path('quiz/export-excel/<int:group_id>/', views.export_results_excel, name='export_results_excel'),
 
-path('quiz/get-remaining-time/', views.get_remaining_time_api, name='get_remaining_time_api'),
-path('quiz/take/<int:group_id>/', views.quiz_take, name='quiz_take'),
-path('quiz-submit/', views.quiz_submit, name='quiz_submit'),  # <-- BU QATORNI QO'SHING
+    # STATISTIKA
+    path('quiz/statistics/<int:group_id>/', views.quiz_statistics, name='quiz_statistics'),
 ]

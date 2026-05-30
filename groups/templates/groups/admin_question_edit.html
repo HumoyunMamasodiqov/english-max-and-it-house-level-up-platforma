@@ -202,6 +202,15 @@
                     <div class="p-3 bg-amber-50 border border-amber-200 rounded text-xs text-amber-700 mb-6">
                         📌 Bu savol turida student javobi admin tomonidan qo'lda baholanadi.
                     </div>
+                {% elif question.question_type == 'speaking' %}
+                    <div class="mb-6">
+                        <label class="block text-sm font-medium text-gray-700 mb-2">Mavzu (Speaking prompt)</label>
+                        <textarea name="s_topic" rows="3" required class="w-full border border-gray-200 rounded-lg px-4 py-2">{{ question.question_text }}</textarea>
+                        <p class="text-xs text-gray-400 mt-1">Og'zaki imtihon mavzusi. Studentlarga ko'rinmaydi.</p>
+                    </div>
+                    <div class="p-3 bg-purple-50 border border-purple-200 rounded text-xs text-purple-700 mb-6">
+                        🎤 Bu savol turida ball o'qituvchi tomonidan qo'lda qo'yiladi.
+                    </div>
                 {% endif %}
                 
                 <!-- Ball -->

@@ -17,6 +17,7 @@ class QuestionType(models.TextChoices):
     CLOZE_MULTIPLE_BLANKS = 'cloze_multiple_blanks', "Matn ichidagi bo'sh joylar"
     COMPLETE_THE_WORDS = 'complete_the_words', "So'zlarni to'ldirish (birinchi harf berilgan)"
     WRITING = 'writing', "Yozma ish (Writing)"
+    SPEAKING = 'speaking', "Og'zaki (Speaking)"
 
 
 class Group(models.Model):
@@ -132,30 +133,6 @@ class ReadingQuestion(models.Model):
 
     def __str__(self):
         return f"{self.reading_text.title} - {self.question_text[:50]}"
-
-
-import json
-import re
-from django.db import models
-
-import json
-import re
-from django.db import models
-from django.contrib.auth.models import User
-
-
-class QuestionType(models.TextChoices):
-    FILL_BLANK = 'fill_blank', "Bo'sh joy to'ldirish (Word Bank)"
-    FILL_BLANK_NO_WORD = 'fill_blank_no_word', "Bo'sh joy to'ldirish (Variantlarsiz)"
-    SENTENCE_ARRANGEMENT = 'sentence_arrangement', "So'zlarni tartibga solish"
-    MULTIPLE_CHOICE = 'multiple_choice', "Test varianti"
-    TRUE_FALSE = 'true_false', "To'g'ri/Noto'g'ri"
-    READING_COMPREHENSION = 'reading_comprehension', "Matn asosida savol"
-    UNDERLINE_CORRECT = 'underline_correct', "To'g'ri so'zni tanlash"
-    MATCHING = 'matching', "Moslashtirish"
-    CLOZE_MULTIPLE_BLANKS = 'cloze_multiple_blanks', "Matn ichidagi bo'sh joylar"
-    COMPLETE_THE_WORDS = 'complete_the_words', "So'zlarni to'ldirish (birinchi harf berilgan)"
-    WRITING = 'writing', "Yozma ish (Writing)"
 
 
 class QuizQuestion(models.Model):

@@ -171,6 +171,7 @@
                                                         {% elif q.question_type == 'cloze_multiple_blanks' %}📄 Ko'p bo'sh joy
                                                         {% elif q.question_type == 'complete_the_words' %}🔤 So'zlarni to'ldirish
                                                         {% elif q.question_type == 'writing' %}✍️ Yozma ish
+                                                        {% elif q.question_type == 'speaking' %}🎤 Og'zaki
                                                         {% endif %}
                                                     </span>
                                                     <span class="text-xs px-2 py-0.5 bg-amber-100 text-amber-700 rounded-full font-medium">
@@ -347,6 +348,14 @@
                                                 <div class="mb-4">
                                                     <p class="text-gray-800 font-medium mb-3">{{ q.question_text }}</p>
                                                     <textarea name="q_{{ q.id }}" rows="6" class="answer-input w-full border border-gray-200 rounded-lg px-4 py-3 text-gray-700 focus:border-black focus:outline-none text-sm" placeholder="Javobingizni yozing...">{{ user_answers|get_item:q.id }}</textarea>
+                                                </div>
+
+                                            <!-- 12. SPEAKING -->
+                                            {% elif q.question_type == 'speaking' %}
+                                                <div class="mb-4">
+                                                    <p class="text-gray-800 font-medium mb-3">{{ q.question_text }}</p>
+                                                    <p class="text-sm text-gray-500 italic">🎤 Ushbu savolga og'zaki javob bering. O'qituvchingiz ball qo'yadi.</p>
+                                                    <input type="hidden" name="q_{{ q.id }}" value="spoken">
                                                 </div>
 
                                             {% else %}

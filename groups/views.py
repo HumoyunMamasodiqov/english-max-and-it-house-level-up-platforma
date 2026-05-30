@@ -9,7 +9,7 @@ from django.http import JsonResponse
 from django.views.decorators.csrf import csrf_exempt
 from django.views.decorators.http import require_http_methods
 from django.utils import timezone
-from django.db.models import Q, Count
+from django.db.models import Q, Count, Max
 from django.db import transaction
 from django.core.cache import cache
 from django.template.defaulttags import register
@@ -775,9 +775,10 @@ def quiz_take(request, group_id):
         student=student, exam_session=quiz_session, is_completed=False
     ).first()
 
-    # Load questions
+    # Load questions — preserve order from stored IDs
     if attempt and attempt.selected_questions:
-        questions = list(QuizQuestion.objects.filter(id__in=attempt.selected_questions).select_related('category'))
+        q_dict = {q.id: q for q in QuizQuestion.objects.filter(id__in=attempt.selected_questions).select_related('category')}
+        questions = [q_dict[qid] for qid in attempt.selected_questions if qid in q_dict]
         user_answers = attempt.user_answers or {}
     else:
         questions_list = []
@@ -884,6 +885,9 @@ def quiz_take(request, group_id):
             'has_fill_blank': has_fill_blank,
             'fill_blank_words': cat_fill_blank_words
         })
+
+    # Categories with speaking/writing must come last
+    category_list.sort(key=lambda c: 1 if any(q.question_type in ('speaking', 'writing') for q in c['list']) else 0)
 
     # Global fill_blank_words
     fill_blank_words = []
@@ -1227,6 +1231,17 @@ def quiz_submit(request):
                     'max_points': question.points
                 }
 
+            elif question.question_type == 'speaking':
+                total_possible += question.points
+                question_results[qid] = {
+                    'type': 'speaking',
+                    'user_answer': '',
+                    'is_correct': None,
+                    'graded': False,
+                    'earned_points': 0,
+                    'max_points': question.points
+                }
+
         final_score = 0
         if total_possible > 0:
             final_score = round((total_score / total_possible) * 100, 1)
@@ -1251,7 +1266,16 @@ def quiz_submit(request):
         )
         
         if not created:
-            # Agar mavjud bo'lsa, yangilaymiz
+            # MUHIM: Admin qo'ygan writing/speaking ballarini saqlab qolish
+            for qid, existing in result.answers.items():
+                if isinstance(existing, dict) and existing.get('type') in ('writing', 'speaking') and existing.get('graded'):
+                    if qid in question_results and isinstance(question_results[qid], dict):
+                        question_results[qid]['earned_points'] = existing.get('earned_points', 0)
+                        question_results[qid]['graded'] = True
+                        question_results[qid]['is_correct'] = existing.get('is_correct', existing.get('earned_points', 0) > 0)
+                        total_score += existing.get('earned_points', 0)
+
+            final_score = round((total_score / total_possible) * 100, 1) if total_possible > 0 else 0
             result.score = final_score
             result.total_questions = total_possible
             result.answers = question_results
@@ -1631,6 +1655,17 @@ def _calculate_score_for_attempt(attempt, group):
                 'max_points': question.points
             }
 
+        elif question.question_type == 'speaking':
+            total_possible += question.points
+            question_results[qid] = {
+                'type': 'speaking',
+                'user_answer': '',
+                'is_correct': None,
+                'graded': False,
+                'earned_points': 0,
+                'max_points': question.points
+            }
+
         else:
             user_answer = user_answers.get(f'q_{question.id}', '')
             if not user_answer:
@@ -1854,7 +1889,16 @@ def stop_exam_api(request):
                 )
                 
                 if not created:
-                    # Agar mavjud bo'lsa, yangilaymiz
+                    # MUHIM: Admin qo'ygan writing/speaking ballarini saqlab qolish
+                    for qid, existing in result.answers.items():
+                        if isinstance(existing, dict) and existing.get('type') in ('writing', 'speaking') and existing.get('graded'):
+                            if qid in question_results and isinstance(question_results[qid], dict):
+                                question_results[qid]['earned_points'] = existing.get('earned_points', 0)
+                                question_results[qid]['graded'] = True
+                                question_results[qid]['is_correct'] = existing.get('is_correct', existing.get('earned_points', 0) > 0)
+                                total_score += existing.get('earned_points', 0)
+
+                    final_score = round((total_score / total_possible) * 100, 1) if total_possible > 0 else 0
                     result.score = final_score
                     result.total_questions = total_possible
                     result.answers = question_results
@@ -3232,6 +3276,19 @@ def admin_question_add(request):
                     messages.success(request, "✅ Yozma ish (Writing) savoli qo'shildi!")
                     return redirect('admin_question_list')
 
+            elif question_type == 'speaking':
+                topic = request.POST.get('s_topic', '').strip()
+                if not topic:
+                    messages.error(request, "Mavzu matnini kiriting!")
+                else:
+                    QuizQuestion.objects.create(
+                        category=category, question_type='speaking',
+                        question_text=topic, correct_answer='',
+                        points=points
+                    )
+                    messages.success(request, "✅ Og'zaki (Speaking) savoli qo'shildi!")
+                    return redirect('admin_question_list')
+
             else:
                 messages.error(request, f"Noto'g'ri savol turi: '{question_type}'")
 
@@ -3918,6 +3975,7 @@ def admin_writing_review(request, group_id):
     ).order_by('-submitted_at')
 
     writing_entries = []
+    seen_combinations = set()
     for result in results:
         if not result.answers:
             continue
@@ -3926,6 +3984,9 @@ def admin_writing_review(request, group_id):
                 try:
                     question = QuizQuestion.objects.get(id=int(qid_str))
                 except (QuizQuestion.DoesNotExist, ValueError):
+                    continue
+                combo = (result.student.id, question.id)
+                if combo in seen_combinations:
                     continue
                 writing_entries.append({
                     'result_id': result.id,
@@ -3938,6 +3999,7 @@ def admin_writing_review(request, group_id):
                     'max_points': question.points,
                     'submitted_at': result.submitted_at,
                 })
+                seen_combinations.add(combo)
 
     return render(request, 'groups/admin_writing_review.html', {
         'group': group,
@@ -3976,34 +4038,27 @@ def admin_writing_grade_api(request, result_id, question_id):
         ans_data['graded'] = True
         ans_data['is_correct'] = earned_points > 0
 
-        # Recalculate score
+        # Recalculate score (barcha savollar bo'yicha total_possible qayta hisoblanadi)
         total_score = 0
         total_possible = 0
-        session = result.quiz_session
-        if session and session.group:
-            questions = QuizQuestion.objects.filter(
-                category__in=GroupCategory.objects.filter(
-                    group=session.group, is_active=True
-                ).values('category')
-            )
-        else:
-            questions = QuizQuestion.objects.none()
+        qids_in_answers = [int(k) for k in result.answers.keys() if str(k).isdigit()]
+        questions = QuizQuestion.objects.filter(id__in=qids_in_answers) if qids_in_answers else QuizQuestion.objects.none()
 
         for q in questions:
             sqid = str(q.id)
             total_possible += q.points
-            if sqid in result.answers:
-                a = result.answers[sqid]
-                if isinstance(a, dict):
-                    if a.get('type') == 'writing':
-                        total_score += a.get('earned_points', 0)
-                    elif 'blanks' in a:
-                        pts_per = round(q.points / max(a.get('blanks_total', 1), 1), 2)
-                        total_score += a.get('blanks_correct', 0) * pts_per
-                    elif a.get('is_correct'):
-                        total_score += q.points
+            a = result.answers[sqid]
+            if isinstance(a, dict):
+                if a.get('type') == 'writing':
+                    total_score += a.get('earned_points', 0)
+                elif 'blanks' in a:
+                    pts_per = round(q.points / max(a.get('blanks_total', 1), 1), 2)
+                    total_score += a.get('blanks_correct', 0) * pts_per
+                elif a.get('is_correct'):
+                    total_score += q.points
 
         result.score = round((total_score / total_possible) * 100, 1) if total_possible > 0 else 0
+        result.total_questions = total_possible
         result.answers[qid_str] = ans_data
         result.save()
 
@@ -4301,7 +4356,18 @@ def admin_question_edit(request, pk):
                     question.save()
                     messages.success(request, "✅ Yozma ish (Writing) savoli tahrirlandi!")
                     return redirect('admin_question_list')
-            
+
+            elif question_type == 'speaking':
+                topic = request.POST.get('s_topic', '').strip()
+                if not topic:
+                    messages.error(request, "Mavzu matnini kiriting!")
+                else:
+                    question.question_text = topic
+                    question.correct_answer = ''
+                    question.save()
+                    messages.success(request, "✅ Og'zaki (Speaking) savoli tahrirlandi!")
+                    return redirect('admin_question_list')
+
             else:
                 messages.error(request, f"Noto'g'ri savol turi: {question_type}")
                 
@@ -4361,5 +4427,319 @@ def admin_question_edit(request, pk):
     })
 
 
+# ============================================================
+# SPEAKING (Og'zaki) BAHOLASH
+# ============================================================
+
+@login_required
+@user_passes_test(is_admin_user)
+def speaking_review(request, group_id):
+    group = get_object_or_404(Group, id=group_id)
+    results = QuizResult.objects.filter(quiz_session__group=group).order_by('-submitted_at')
+    questions = QuizQuestion.objects.filter(category__group_categories__group=group, question_type='speaking').distinct()
+
+    speaking_entries = []
+    seen_combinations = set()
+
+    for result in results:
+        if not result.answers:
+            continue
+        for qid_str, ans_data in result.answers.items():
+            if isinstance(ans_data, dict) and ans_data.get('type') == 'speaking':
+                try:
+                    question = QuizQuestion.objects.get(id=int(qid_str))
+                except (QuizQuestion.DoesNotExist, ValueError):
+                    continue
+                combo = (result.student.id, question.id)
+                if combo in seen_combinations:
+                    continue
+                speaking_entries.append({
+                    'result_id': result.id,
+                    'question_id': question.id,
+                    'student_id': result.student.id,
+                    'student_name': result.student.full_name,
+                    'topic': question.question_text,
+                    'answer': ans_data.get('user_answer', ''),
+                    'graded': ans_data.get('graded', False),
+                    'earned_points': ans_data.get('earned_points', 0),
+                    'max_points': question.points,
+                    'submitted_at': result.submitted_at,
+                })
+                seen_combinations.add(combo)
+
+    for student in group.students.all().select_related('user'):
+        for q in questions:
+            if (student.id, q.id) not in seen_combinations:
+                speaking_entries.append({
+                    'result_id': None,
+                    'question_id': q.id,
+                    'student_id': student.id,
+                    'student_name': student.full_name,
+                    'topic': q.question_text,
+                    'answer': '',
+                    'graded': False,
+                    'earned_points': 0,
+                    'max_points': q.points,
+                    'submitted_at': None,
+                })
+
+    return render(request, 'groups/admin_speaking_review.html', {
+        'group': group,
+        'speaking_entries': speaking_entries,
+        'questions': questions,
+    })
 
 
+@login_required
+@user_passes_test(is_admin_user)
+@csrf_exempt
+def speaking_save_score_api(request):
+    if request.method != 'POST':
+        return JsonResponse({'success': False, 'message': 'POST kerak'})
+    try:
+        data = json.loads(request.body)
+        student_id = data.get('student_id')
+        question_id = data.get('question_id')
+        group_id = data.get('group_id')
+        earned_points = float(data.get('earned_points', 0))
+
+        student = get_object_or_404(Student, id=student_id)
+        question = get_object_or_404(QuizQuestion, id=question_id, question_type='speaking')
+        group = get_object_or_404(Group, id=group_id)
+        max_points = question.points
+        earned_points = max(0, min(earned_points, max_points))
+
+        quiz_session = QuizSession.objects.filter(group=group, is_active=True).first()
+        if not quiz_session:
+            quiz_session = QuizSession.objects.filter(group=group).order_by('-started_at').first()
+        if not quiz_session:
+            quiz_session = QuizSession.objects.create(
+                group=group, is_active=False, started_at=timezone.now(), created_by=request.user
+            )
+
+        latest = QuizResult.objects.filter(
+            student=student, quiz_session=quiz_session
+        ).order_by('-attempt_number', '-id').first()
+
+        if latest:
+            result = latest
+            created = False
+        else:
+            result, created = QuizResult.objects.get_or_create(
+                student=student, quiz_session=quiz_session, attempt_number=1,
+                defaults={'score': 0, 'total_questions': max_points, 'answers': {}}
+            )
+
+        if not result.answers:
+            result.answers = {}
+
+        qid_str = str(question.id)
+        result.answers[qid_str] = {
+            'type': 'speaking',
+            'earned_points': earned_points,
+            'max_points': max_points,
+            'graded': True,
+            'is_correct': earned_points > 0,
+        }
+
+        total_score = 0
+        total_possible = 0
+        qids_in_answers = [int(k) for k in result.answers.keys() if str(k).isdigit()]
+        questions = QuizQuestion.objects.filter(id__in=qids_in_answers) if qids_in_answers else QuizQuestion.objects.none()
+        for q in questions:
+            sqid = str(q.id)
+            total_possible += q.points
+            a = result.answers[sqid]
+            if isinstance(a, dict):
+                if a.get('type') in ('writing', 'speaking'):
+                    total_score += a.get('earned_points', 0)
+                elif 'blanks' in a:
+                    pts_per = round(q.points / max(a.get('blanks_total', 1), 1), 2)
+                    total_score += a.get('blanks_correct', 0) * pts_per
+                elif a.get('is_correct'):
+                    total_score += q.points
+
+        result.score = round((total_score / total_possible) * 100, 1) if total_possible > 0 else 0
+        result.total_questions = total_possible
+        result.save()
+
+        return JsonResponse({
+            'success': True,
+            'earned': earned_points,
+            'max_points': max_points,
+            'score': result.score,
+        })
+
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        return JsonResponse({'success': False, 'message': str(e)})
+
+
+# ============================================================
+# NATIJALARNI EXPORT QILISH (CSV/Excel)
+# ============================================================
+
+@login_required
+@user_passes_test(is_admin_user)
+def export_results_csv(request, group_id):
+    import csv
+    from django.http import HttpResponse
+
+    group = get_object_or_404(Group, id=group_id)
+
+    latest_results = QuizResult.objects.filter(
+        quiz_session__group=group
+    ).values('student_id').annotate(
+        latest_id=Max('id')
+    ).values_list('latest_id', flat=True)
+
+    all_results = QuizResult.objects.filter(
+        id__in=latest_results
+    ).select_related('student__user').order_by('-submitted_at')
+
+    response = HttpResponse(content_type='text/csv; charset=utf-8')
+    response['Content-Disposition'] = f'attachment; filename="{group.name}_natijalar.csv"'
+    response.write('\ufeff')
+
+    writer = csv.writer(response)
+    writer.writerow(['#', 'Student', 'Username', 'Ball', 'Maks. Ball', 'Foiz', 'Sana'])
+
+    for i, result in enumerate(all_results, 1):
+        total_possible = result.total_questions or 0
+        score_pct = float(result.score)
+        raw_score = round((score_pct / 100) * total_possible, 1) if total_possible > 0 else 0
+        writer.writerow([
+            i,
+            result.student.full_name,
+            result.student.user.username,
+            raw_score,
+            total_possible,
+            f'{score_pct}%',
+            result.submitted_at.strftime('%Y-%m-%d %H:%M:%S'),
+        ])
+
+    return response
+
+
+@login_required
+@user_passes_test(is_admin_user)
+def export_results_excel(request, group_id):
+    group = get_object_or_404(Group, id=group_id)
+    from django.http import HttpResponse
+
+    try:
+        import openpyxl
+        from openpyxl.styles import Font, Alignment, PatternFill
+    except ImportError:
+        messages.error(request, "openpyxl kutubxonasi o'rnatilmagan. pip install openpyxl")
+        return redirect('quiz_results', group_id=group_id)
+
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = "Natijalar"
+
+    header_font = Font(bold=True, color="FFFFFF", size=12)
+    header_fill = PatternFill(start_color="333333", end_color="333333", fill_type="solid")
+
+    headers = ['#', 'Student', 'Username', 'Ball', 'Maks. Ball', 'Foiz', 'Sana']
+    for col, header in enumerate(headers, 1):
+        cell = ws.cell(row=1, column=col, value=header)
+        cell.font = header_font
+        cell.fill = header_fill
+        cell.alignment = Alignment(horizontal='center')
+
+    latest_results = QuizResult.objects.filter(
+        quiz_session__group=group
+    ).values('student_id').annotate(
+        latest_id=Max('id')
+    ).values_list('latest_id', flat=True)
+
+    all_results = QuizResult.objects.filter(
+        id__in=latest_results
+    ).select_related('student__user').order_by('-submitted_at')
+
+    for i, result in enumerate(all_results, 1):
+        total_possible = result.total_questions or 0
+        score_pct = float(result.score)
+        raw_score = round((score_pct / 100) * total_possible, 1) if total_possible > 0 else 0
+        ws.cell(row=i+1, column=1, value=i)
+        ws.cell(row=i+1, column=2, value=result.student.full_name)
+        ws.cell(row=i+1, column=3, value=result.student.user.username)
+        ws.cell(row=i+1, column=4, value=raw_score)
+        ws.cell(row=i+1, column=5, value=total_possible)
+        ws.cell(row=i+1, column=6, value=f'{score_pct}%')
+        ws.cell(row=i+1, column=7, value=result.submitted_at.strftime('%Y-%m-%d %H:%M:%S'))
+
+    ws.column_dimensions['A'].width = 5
+    ws.column_dimensions['B'].width = 25
+    ws.column_dimensions['C'].width = 15
+    ws.column_dimensions['D'].width = 10
+    ws.column_dimensions['E'].width = 12
+    ws.column_dimensions['F'].width = 10
+    ws.column_dimensions['G'].width = 22
+
+    response = HttpResponse(content_type='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
+    response['Content-Disposition'] = f'attachment; filename="{group.name}_natijalar.xlsx"'
+    wb.save(response)
+    return response
+
+
+# ============================================================
+# STATISTIKA DIAGRAMMALAR BILAN
+# ============================================================
+
+@login_required
+@user_passes_test(is_admin_user)
+def quiz_statistics(request, group_id):
+    group = get_object_or_404(Group, id=group_id)
+
+    latest_results = QuizResult.objects.filter(
+        quiz_session__group=group
+    ).values('student_id').annotate(
+        latest_id=Max('id')
+    ).values_list('latest_id', flat=True)
+
+    results = QuizResult.objects.filter(
+        id__in=latest_results
+    ).select_related('student__user').order_by('-submitted_at')
+
+    score_ranges = {'0-20': 0, '21-40': 0, '41-60': 0, '61-80': 0, '81-100': 0}
+    student_scores = []
+    labels = []
+    score_values = []
+    colors = []
+
+    for r in results:
+        score = float(r.score)
+        name = r.student.full_name
+        student_scores.append({'name': name, 'score': score})
+        labels.append(name)
+        score_values.append(score)
+
+        if score <= 20: score_ranges['0-20'] += 1
+        elif score <= 40: score_ranges['21-40'] += 1
+        elif score <= 60: score_ranges['41-60'] += 1
+        elif score <= 80: score_ranges['61-80'] += 1
+        else: score_ranges['81-100'] += 1
+
+    total = len(results)
+    avg_score = round(sum(score_values) / total, 1) if total > 0 else 0
+    max_score = max(score_values) if score_values else 0
+    min_score = min(score_values) if score_values else 0
+    above_70 = sum(1 for s in score_values if s >= 70)
+    below_40 = sum(1 for s in score_values if s < 40)
+
+    return render(request, 'groups/quiz_statistics.html', {
+        'group': group,
+        'total_students': total,
+        'avg_score': avg_score,
+        'max_score': max_score,
+        'min_score': min_score,
+        'above_70': above_70,
+        'below_40': below_40,
+        'score_ranges': json.dumps(score_ranges),
+        'labels': json.dumps(labels),
+        'score_values': json.dumps(score_values),
+        'student_scores': student_scores,
+    })
