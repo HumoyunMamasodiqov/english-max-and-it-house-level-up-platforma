@@ -1,260 +1,625 @@
+# models.py
 from django.db import models
 from django.contrib.auth.models import User
+import json
+import re
+
+
+class QuestionType(models.TextChoices):
+    FILL_BLANK = 'fill_blank', "Bo'sh joy to'ldirish (Word Bank)"
+    FILL_BLANK_NO_WORD = 'fill_blank_no_word', "Bo'sh joy to'ldirish (Variantlarsiz)"
+    SENTENCE_ARRANGEMENT = 'sentence_arrangement', "So'zlarni tartibga solish"
+    MULTIPLE_CHOICE = 'multiple_choice', "Test varianti"
+    TRUE_FALSE = 'true_false', "To'g'ri/Noto'g'ri"
+    READING_COMPREHENSION = 'reading_comprehension', "Matn asosida savol"
+    UNDERLINE_CORRECT = 'underline_correct', "To'g'ri so'zni tanlash"
+    MATCHING = 'matching', "Moslashtirish"
+    CLOZE_MULTIPLE_BLANKS = 'cloze_multiple_blanks', "Matn ichidagi bo'sh joylar"
+    COMPLETE_THE_WORDS = 'complete_the_words', "So'zlarni to'ldirish (birinchi harf berilgan)"
+    WRITING = 'writing', "Yozma ish (Writing)"
 
 
 class Group(models.Model):
-    """Guruh modeli"""
     name = models.CharField(max_length=100, unique=True, verbose_name="Guruh nomi")
     teacher = models.CharField(max_length=200, verbose_name="O'qituvchi")
-    created_at = models.DateTimeField(auto_now_add=True, verbose_name="Yaratilgan")
-    
+    created_at = models.DateTimeField(auto_now_add=True)
+
     class Meta:
         verbose_name = "Guruh"
         verbose_name_plural = "Guruhlar"
         ordering = ['-created_at']
-    
+
     def __str__(self):
         return self.name
-    
-    def get_exam_config(self):
-        """Imtihon sozlamalarini olish"""
-        try:
-            return self.exam_config
-        except:
-            return None
 
 
 class Student(models.Model):
-    """Talaba modeli"""
     user = models.OneToOneField(User, on_delete=models.CASCADE, related_name='student_profile')
-    group = models.ForeignKey(Group, on_delete=models.SET_NULL, null=True, blank=True, related_name='students', verbose_name="Guruh")
-    
+    group = models.ForeignKey(
+        Group, on_delete=models.SET_NULL, null=True, blank=True,
+        related_name='students', verbose_name="Guruh"
+    )
+
     class Meta:
         verbose_name = "Foydalanuvchi"
         verbose_name_plural = "Foydalanuvchilar"
-    
+
     def __str__(self):
-        return self.user.get_full_name() if self.user.get_full_name() else self.user.username
-    
+        return self.full_name
+
     @property
     def full_name(self):
         return self.user.get_full_name() if self.user.get_full_name() else self.user.username
 
 
 class Category(models.Model):
-    """Kategoriya (Fan/Bo'lim)"""
     name = models.CharField(max_length=100, unique=True, verbose_name="Kategoriya nomi")
     description = models.TextField(blank=True, null=True, verbose_name="Tavsif")
     created_at = models.DateTimeField(auto_now_add=True)
-    
+
+    # Audio sozlamalari
+    audio_file = models.FileField(
+        upload_to='category_audio/', blank=True, null=True,
+        verbose_name="Kategoriya audio fayli"
+    )
+    max_audio_plays = models.IntegerField(
+        default=1,
+        verbose_name="Audio necha marta eshitilishi mumkin (0=cheksiz)"
+    )
+    audio_instruction = models.TextField(
+        blank=True, null=True,
+        verbose_name="Audio uchun qo'shimcha ko'rsatma"
+    )
+
     class Meta:
         verbose_name = "Kategoriya"
         verbose_name_plural = "Kategoriyalar"
         ordering = ['name']
-    
+
     def __str__(self):
         return self.name
 
 
 class GroupCategory(models.Model):
-    """Guruhga biriktirilgan kategoriyalar"""
     group = models.ForeignKey(Group, on_delete=models.CASCADE, related_name='group_categories')
     category = models.ForeignKey(Category, on_delete=models.CASCADE, related_name='group_categories')
     is_active = models.BooleanField(default=True, verbose_name="Faol")
     assigned_at = models.DateTimeField(auto_now_add=True)
-    
+
     class Meta:
         verbose_name = "Guruh kategoriyasi"
         verbose_name_plural = "Guruh kategoriyalari"
         unique_together = ['group', 'category']
-    
+
     def __str__(self):
         return f"{self.group.name} - {self.category.name}"
 
 
-class QuizQuestion(models.Model):
-    """Test savollari"""
-    category = models.ForeignKey(Category, on_delete=models.CASCADE, related_name='quiz_questions', verbose_name="Kategoriya")
-    question_text = models.TextField(verbose_name="Savol matni")
-    correct_answer = models.CharField(max_length=255, verbose_name="To'g'ri javob")
+class ReadingText(models.Model):
+    title = models.CharField(max_length=200, verbose_name="Matn sarlavhasi")
+    content = models.TextField(verbose_name="Matn mazmuni")
+    category = models.ForeignKey(
+        Category, on_delete=models.CASCADE,
+        related_name='reading_texts', verbose_name="Kategoriya"
+    )
     created_at = models.DateTimeField(auto_now_add=True)
-    
+
+    class Meta:
+        verbose_name = "Matn"
+        verbose_name_plural = "Matnlar"
+        ordering = ['-created_at']
+
+    def __str__(self):
+        return self.title
+
+
+class ReadingQuestion(models.Model):
+    """Matnga oid savollar"""
+    reading_text = models.ForeignKey(
+        ReadingText, on_delete=models.CASCADE,
+        # MUHIM: related_name ikki joyda ham mos kelishi kerak
+        related_name='reading_questions',
+        verbose_name="Matn"
+    )
+    question_text = models.TextField(verbose_name="Savol matni")
+    correct_answer = models.CharField(max_length=500, verbose_name="To'g'ri javob")
+    order = models.IntegerField(default=0, verbose_name="Tartib")
+
+    class Meta:
+        verbose_name = "Matn savoli"
+        verbose_name_plural = "Matn savollari"
+        ordering = ['order', 'id']
+
+    def __str__(self):
+        return f"{self.reading_text.title} - {self.question_text[:50]}"
+
+
+import json
+import re
+from django.db import models
+
+import json
+import re
+from django.db import models
+from django.contrib.auth.models import User
+
+
+class QuestionType(models.TextChoices):
+    FILL_BLANK = 'fill_blank', "Bo'sh joy to'ldirish (Word Bank)"
+    FILL_BLANK_NO_WORD = 'fill_blank_no_word', "Bo'sh joy to'ldirish (Variantlarsiz)"
+    SENTENCE_ARRANGEMENT = 'sentence_arrangement', "So'zlarni tartibga solish"
+    MULTIPLE_CHOICE = 'multiple_choice', "Test varianti"
+    TRUE_FALSE = 'true_false', "To'g'ri/Noto'g'ri"
+    READING_COMPREHENSION = 'reading_comprehension', "Matn asosida savol"
+    UNDERLINE_CORRECT = 'underline_correct', "To'g'ri so'zni tanlash"
+    MATCHING = 'matching', "Moslashtirish"
+    CLOZE_MULTIPLE_BLANKS = 'cloze_multiple_blanks', "Matn ichidagi bo'sh joylar"
+    COMPLETE_THE_WORDS = 'complete_the_words', "So'zlarni to'ldirish (birinchi harf berilgan)"
+    WRITING = 'writing', "Yozma ish (Writing)"
+
+
+class QuizQuestion(models.Model):
+    category = models.ForeignKey('Category', on_delete=models.CASCADE, related_name='quiz_questions', verbose_name="Kategoriya")
+    question_type = models.CharField(max_length=30, choices=QuestionType.choices, default=QuestionType.FILL_BLANK, verbose_name="Savol turi")
+    question_text = models.TextField(verbose_name="Savol matni", blank=True, null=True)
+    correct_answer = models.TextField(max_length=2000, verbose_name="To'g'ri javob", blank=True, null=True)
+    scrambled_words = models.TextField(blank=True, null=True, verbose_name="Chalkashtirilgan so'zlar / Variantlar / Matching data")
+    correct_sentence = models.TextField(blank=True, null=True, verbose_name="To'g'ri gap")
+    reading_text = models.ForeignKey('ReadingText', on_delete=models.CASCADE, null=True, blank=True, related_name='quiz_questions', verbose_name="Matn")
+    blank_options = models.JSONField(default=dict, blank=True, null=True, verbose_name="Bo'sh joy variantlari")
+    blank_positions = models.JSONField(default=dict, blank=True, null=True, verbose_name="Bo'sh joy pozitsiyalari")
+    points = models.IntegerField(default=1, verbose_name="Ball")
+    created_at = models.DateTimeField(auto_now_add=True)
+
     class Meta:
         verbose_name = "Savol"
         verbose_name_plural = "Savollar"
         ordering = ['category__name', 'id']
-    
+
     def __str__(self):
-        return f"[{self.category.name}] {self.question_text[:50]}..."
-    
+        if self.question_type == 'reading_comprehension' and self.reading_text:
+            return f"[{self.category.name}] Matn: {self.reading_text.title}"
+        if self.question_type == 'sentence_arrangement':
+            words = self.get_scrambled_words_list()
+            return f"[{self.category.name}] So'z tartib: {' '.join(words[:3])}..."
+        text = self.question_text or "Savol"
+        return f"[{self.category.name}] {text[:50]}..."
+
+    # =========================================================
+    # SENTENCE ARRANGEMENT
+    # =========================================================
+    def get_scrambled_words_list(self):
+        """Sentence arrangement uchun so'zlar ro'yxatini qaytaradi"""
+        if not self.scrambled_words:
+            return []
+        
+        # JSON formatda saqlangan bo'lsa
+        try:
+            data = json.loads(self.scrambled_words)
+            if isinstance(data, list):
+                return data
+        except:
+            pass
+        
+        # / bilan ajratilgan bo'lsa
+        if '/' in self.scrambled_words:
+            words = [w.strip() for w in self.scrambled_words.split('/') if w.strip()]
+            if words:
+                return words
+        
+        # Bo'sh joy bilan ajratilgan bo'lsa
+        words = self.scrambled_words.split()
+        if words:
+            return words
+        
+        return []
+
+    def get_correct_sentence_list(self):
+        """To'g'ri gapni so'zlar ro'yxati sifatida qaytaradi"""
+        if self.correct_sentence:
+            return self.correct_sentence.split()
+        return self.get_scrambled_words_list()
+
+    def save(self, *args, **kwargs):
+        """Saqlashdan oldin correct_sentence ni so'zlardan yig'ish"""
+        if self.question_type == 'sentence_arrangement' and self.scrambled_words and not self.correct_sentence:
+            words = self.get_scrambled_words_list()
+            self.correct_sentence = ' '.join(words)
+        super().save(*args, **kwargs)
+
+    # =========================================================
+    # FILL BLANK - WORD BANK UCHUN
+    # =========================================================
+    def get_options_list(self):
+        """Fill blank uchun variantlarni qaytaradi (Word Bank so'zlari)"""
+        options = []
+        
+        if self.question_type == 'fill_blank':
+            # 1. scrambled_words dan olish (JSON format)
+            if self.scrambled_words:
+                try:
+                    data = json.loads(self.scrambled_words)
+                    if isinstance(data, list):
+                        return data
+                except:
+                    pass
+            
+            # 2. scrambled_words dan / bilan ajratilgan holda
+            if self.scrambled_words and '/' in self.scrambled_words:
+                options = [opt.strip() for opt in self.scrambled_words.split('/') if opt.strip()]
+                if options:
+                    return options
+            
+            # 3. correct_answer dan olish
+            if self.correct_answer:
+                if '|' in self.correct_answer:
+                    options = [opt.strip() for opt in self.correct_answer.split('|') if opt.strip()]
+                    if options:
+                        return options
+                else:
+                    return [self.correct_answer.strip()]
+            
+            # 4. Agar hech narsa bo'lmasa, question_text dan blankdan keyingi so'zni olish
+            if self.question_text:
+                match = re.search(r'_{3,}\s*(\w+)', self.question_text)
+                if match:
+                    return [match.group(1)]
+        
+        elif self.question_type == 'multiple_choice':
+            if self.scrambled_words:
+                try:
+                    options = json.loads(self.scrambled_words)
+                    if isinstance(options, list):
+                        return options
+                except:
+                    if '|' in self.scrambled_words:
+                        return [opt.strip() for opt in self.scrambled_words.split('|') if opt.strip()]
+                    return [self.scrambled_words]
+        
+        return options
+
+    # =========================================================
+    # UNDERLINE CORRECT
+    # =========================================================
+    def get_underline_options(self):
+        if self.question_type != 'underline_correct':
+            return []
+        if self.scrambled_words:
+            try:
+                data = json.loads(self.scrambled_words)
+                if isinstance(data, list):
+                    return data
+            except:
+                pass
+        if self.scrambled_words and '/' in self.scrambled_words:
+            return [opt.strip() for opt in self.scrambled_words.split('/') if opt.strip()]
+        if self.question_text and '/' in self.question_text:
+            text = self.question_text
+            slash_index = text.find('/')
+            before = text[:slash_index].strip().split()
+            after = text[slash_index + 1:].strip().split()
+            left = before[-1] if before else ''
+            right = after[0] if after else ''
+            return [left, right]
+        return []
+
+    # =========================================================
+    # MATCHING
+    # =========================================================
+    def get_matching_left_items(self):
+        if self.question_type == 'matching' and self.scrambled_words:
+            try:
+                data = json.loads(self.scrambled_words)
+                return data.get('left', [])
+            except:
+                return []
+        return []
+
+    def get_matching_right_items(self):
+        if self.question_type == 'matching' and self.scrambled_words:
+            try:
+                data = json.loads(self.scrambled_words)
+                return data.get('right', [])
+            except:
+                return []
+        return []
+
+    def get_matching_correct_answers(self):
+        if self.question_type == 'matching' and self.correct_answer:
+            try:
+                return json.loads(self.correct_answer)
+            except:
+                return {}
+        return {}
+
+    # =========================================================
+    # CLOZE
+    # =========================================================
+    def get_cloze_blanks(self):
+        if self.question_type == 'cloze_multiple_blanks' and self.question_text:
+            blanks = re.findall(r'___(\d+)___', self.question_text)
+            return sorted(set(blanks), key=int)
+        return []
+
+    def get_cloze_blank_options(self, blank_num):
+        if self.blank_options:
+            return self.blank_options.get(str(blank_num), [])
+        return []
+
+    def get_cloze_correct_answers(self):
+        if self.question_type != 'cloze_multiple_blanks' or not self.correct_answer:
+            return {}
+        try:
+            result = json.loads(self.correct_answer)
+            if isinstance(result, dict):
+                return result
+        except:
+            pass
+        return {}
+
+    def get_cloze_text_with_selects(self):
+        if self.question_type != 'cloze_multiple_blanks':
+            return self.question_text or ""
+        text = self.question_text or ""
+        def replace_match(match):
+            blank_num = match.group(1)
+            options = self.get_cloze_blank_options(blank_num)
+            name_attr = f'q_{self.id}_blank_{blank_num}'
+            if options:
+                options_html = '<option value="">-- Tanlang --</option>'
+                for opt in options:
+                    options_html += f'<option value="{opt}">{opt}</option>'
+                return f'<select name="{name_attr}" class="cloze-select border border-gray-300 px-2 py-1 mx-1" data-blank="{blank_num}">{options_html}</select>'
+            return f'<input type="text" name="{name_attr}" class="cloze-input border border-gray-300 px-2 py-1 mx-1 w-32" data-blank="{blank_num}" placeholder="___{blank_num}___" autocomplete="off">'
+        return re.sub(r'___(\d+)___', replace_match, text)
+
+    # =========================================================
+    # COMPLETE THE WORDS
+    # =========================================================
+    def get_complete_words_blanks(self):
+        if self.question_type != 'complete_the_words' or not self.question_text:
+            return {}
+        blanks = {}
+        pattern = r'([a-zA-Z]*)_{3,}'
+        matches = list(re.finditer(pattern, self.question_text))
+        for idx, match in enumerate(matches, 1):
+            prefix = match.group(1) if match.group(1) else ''
+            blanks[str(idx)] = {
+                'prefix': prefix.lower(),
+                'full_match': match.group(0),
+                'start_pos': match.start(),
+                'end_pos': match.end()
+            }
+        if not blanks:
+            matches2 = list(re.finditer(r'_{3,}', self.question_text))
+            for idx, match in enumerate(matches2, 1):
+                blanks[str(idx)] = {
+                    'prefix': '',
+                    'full_match': match.group(0),
+                    'start_pos': match.start(),
+                    'end_pos': match.end()
+                }
+        return blanks
+
+    def get_complete_words_answers(self):
+        if self.question_type != 'complete_the_words' or not self.correct_answer:
+            return {}
+        result = {}
+        if ',' in self.correct_answer:
+            parts = [p.strip() for p in self.correct_answer.split(',') if p.strip()]
+            for idx, part in enumerate(parts, 1):
+                result[str(idx)] = part
+        else:
+            result["1"] = self.correct_answer.strip()
+        return result
+
+    # =========================================================
+    # INLINE INPUTS
+    # =========================================================
+    def get_question_text_with_inline_inputs(self, user_answer=None, question_type_override=None):
+        text = self.question_text or ""
+        q_type = question_type_override or self.question_type
+
+        if q_type == 'complete_the_words':
+            blanks = self.get_complete_words_blanks()
+            if blanks:
+                for blank_num, blank_info in blanks.items():
+                    prefix = blank_info.get('prefix', '')
+                    full_match = blank_info.get('full_match', '___')
+                    value = ''
+                    if isinstance(user_answer, dict):
+                        value = user_answer.get(blank_num, '')
+                    elif isinstance(user_answer, str):
+                        value = user_answer
+                    input_html = f'<input type="text" name="q_{self.id}_blank_{blank_num}" class="inline-blank-input complete-word-input" value="{value}" placeholder="{prefix}..." autocomplete="off" data-blank-num="{blank_num}" style="min-width: 80px;">'
+                    if prefix:
+                        text = text.replace(full_match, f'<span class="inline-flex items-center gap-1"><span>{prefix}</span>{input_html}</span>', 1)
+                    else:
+                        text = text.replace(full_match, input_html, 1)
+                return text
+
+        if q_type == 'reading_comprehension' and self.reading_text:
+            return text
+
+        if q_type in ['fill_blank', 'fill_blank_no_word']:
+            blanks = re.findall(r'_{3,}', text)
+            if len(blanks) == 1:
+                value = user_answer if isinstance(user_answer, str) else ''
+                return re.sub(
+                    r'_{3,}',
+                    f'<input type="text" name="q_{self.id}" class="inline-blank-input" value="{value}" placeholder="___" autocomplete="off">',
+                    text,
+                    count=1
+                )
+            elif len(blanks) > 1:
+                for i, blank in enumerate(blanks):
+                    value = user_answer.get(str(i), '') if isinstance(user_answer, dict) else ''
+                    text = text.replace(blank, f'<input type="text" name="q_{self.id}_blank_{i}" class="inline-blank-input" value="{value}" placeholder="___{i+1}___" size="12" autocomplete="off">', 1)
+                return text
+
+        return text
+
     @property
     def blank_text(self):
-        """___ bilan almashtirilgan matn"""
         return self.question_text
 
 
 class QuizSession(models.Model):
-    """Quiz sessiyasi"""
-    group = models.ForeignKey(Group, on_delete=models.CASCADE, related_name='quiz_sessions')
-    is_active = models.BooleanField(default=False, verbose_name="Faol")
+    group = models.ForeignKey(Group, on_delete=models.CASCADE)
+    is_active = models.BooleanField(default=False)
     started_at = models.DateTimeField(null=True, blank=True)
     ended_at = models.DateTimeField(null=True, blank=True)
-    created_by = models.ForeignKey(User, on_delete=models.CASCADE, related_name='created_quizzes')
-    
+    created_by = models.ForeignKey(User, on_delete=models.CASCADE)
+
     class Meta:
         verbose_name = "Quiz sessiyasi"
         verbose_name_plural = "Quiz sessiyalari"
-    
+
     def __str__(self):
         return f"{self.group.name} - {'Faol' if self.is_active else 'Tugagan'}"
 
 
 class QuizResult(models.Model):
-    """Quiz natijalari - har bir urinish uchun alohida yozuv"""
     student = models.ForeignKey(Student, on_delete=models.CASCADE, related_name='quiz_results')
     quiz_session = models.ForeignKey(QuizSession, on_delete=models.CASCADE, related_name='results')
-    score = models.IntegerField(default=0, verbose_name="Ball")
+    score = models.FloatField(default=0, verbose_name="Ball (0-100)")  # Float ga o'zgartirildi
     total_questions = models.IntegerField(default=0, verbose_name="Jami savollar")
     answers = models.JSONField(default=dict, verbose_name="Javoblar")
     submitted_at = models.DateTimeField(auto_now_add=True)
     attempt_number = models.IntegerField(default=1, verbose_name="Urinish raqami")
-    
+
     class Meta:
         verbose_name = "Quiz natijasi"
         verbose_name_plural = "Quiz natijalari"
         ordering = ['-submitted_at']
-    
+
     def __str__(self):
-        return f"{self.student.full_name} - {self.score}/{self.total_questions} (#{self.attempt_number})"
-    
+        return f"{self.student.full_name} - {self.score}/100 (#{self.attempt_number})"
+
     @property
     def percentage(self):
-        if self.total_questions > 0:
-            return round((self.score / self.total_questions) * 100, 1)
-        return 0
-
-
-class GroupExamConfig(models.Model):
-    """Guruh imtihon sozlamalari"""
-    group = models.OneToOneField(Group, on_delete=models.CASCADE, related_name='exam_config')
-    questions_per_student = models.IntegerField(default=5, verbose_name="Har bir talabaga savollar soni")
-    random_order = models.BooleanField(default=True, verbose_name="Random tartib")
-    show_correct_answer = models.BooleanField(default=False, verbose_name="To'g'ri javobni ko'rsatish")
-    time_limit = models.IntegerField(default=0, verbose_name="Vaqt limiti (daqiqa)")
-    max_attempts = models.IntegerField(default=1, verbose_name="Maksimal urinishlar")
-    updated_at = models.DateTimeField(auto_now=True)
-    
-    class Meta:
-        verbose_name = "Imtihon sozlamasi"
-        verbose_name_plural = "Imtihon sozlamalari"
-    
-    def __str__(self):
-        return f"{self.group.name}: {self.questions_per_student} savol/talaba"
-
+        return self.score  # 0-100 oralig'ida
 
 class UserExamAttempt(models.Model):
-    """Foydalanuvchi imtihon urinishi"""
     student = models.ForeignKey(Student, on_delete=models.CASCADE, related_name='exam_attempts')
-    exam_session = models.ForeignKey(QuizSession, on_delete=models.CASCADE, related_name='attempts')
+    exam_session = models.ForeignKey(
+        QuizSession, on_delete=models.CASCADE,
+        related_name='attempts', null=True, blank=True
+    )
     selected_questions = models.JSONField(default=list, verbose_name="Tanlangan savollar")
+    user_answers = models.JSONField(default=dict, blank=True, verbose_name="Foydalanuvchi javoblari")
     started_at = models.DateTimeField(auto_now_add=True)
     completed_at = models.DateTimeField(null=True, blank=True)
     is_completed = models.BooleanField(default=False)
     attempt_number = models.IntegerField(default=1, verbose_name="Urinish raqami")
-    
+
     class Meta:
         verbose_name = "Imtihon urinishi"
         verbose_name_plural = "Imtihon urinishlari"
         ordering = ['-started_at']
-    
+
     def __str__(self):
         status = "Tugallangan" if self.is_completed else "Jarayonda"
-        return f"{self.student.full_name} - {self.exam_session.group.name} (#{self.attempt_number}) - {status}"
+        return f"{self.student.full_name} - #{self.attempt_number} - {status}"
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 class ExamControl(models.Model):
-    """Imtihon boshqaruvi"""
     group = models.OneToOneField(Group, on_delete=models.CASCADE, related_name='exam_control')
     is_active = models.BooleanField(default=False)
+    is_paused = models.BooleanField(default=False)  # <-- BU MAYDON BO'LISHI KERAK
     started_at = models.DateTimeField(null=True, blank=True)
-    
+    paused_at = models.DateTimeField(null=True, blank=True)
+    elapsed_time = models.IntegerField(default=0)
+
     class Meta:
         verbose_name = "Imtihon boshqaruvi"
         verbose_name_plural = "Imtihon boshqaruvlari"
-    
-    def __str__(self):
-        return f"{self.group.name} - {'Faol' if self.is_active else 'Faol emas'}"
+
+
+
+
+
+
 
 
 class ExamSession(models.Model):
-    """Eski imtihon sessiyasi - backward compatibility uchun"""
     group = models.ForeignKey(Group, on_delete=models.CASCADE, related_name='exam_sessions')
     is_active = models.BooleanField(default=False)
     started_at = models.DateTimeField(null=True, blank=True)
     ended_at = models.DateTimeField(null=True, blank=True)
     created_by = models.ForeignKey(User, on_delete=models.CASCADE, related_name='created_exams')
-    
+
     class Meta:
         verbose_name = "Imtihon sessiyasi"
         verbose_name_plural = "Imtihon sessiyalari"
-    
+
     def __str__(self):
         return f"{self.group.name} - {'Faol' if self.is_active else 'Tugagan'}"
 
 
 class ExamResult(models.Model):
-    """Eski imtihon natijasi - backward compatibility uchun"""
     student = models.ForeignKey(Student, on_delete=models.CASCADE, related_name='exam_results')
     exam_session = models.ForeignKey(ExamSession, on_delete=models.CASCADE, related_name='results')
     score = models.IntegerField(default=0)
     answers = models.JSONField(default=dict)
     submitted_at = models.DateTimeField(auto_now_add=True)
-    
+
     class Meta:
         verbose_name = "Imtihon natijasi"
         verbose_name_plural = "Imtihon natijalari"
 
 
 class AdminPassword(models.Model):
-    """Admin paroli"""
     user = models.OneToOneField(User, on_delete=models.CASCADE, related_name='admin_password')
     plain_password = models.CharField(max_length=255, blank=True, null=True)
     updated_at = models.DateTimeField(auto_now=True)
-    
+
     class Meta:
         verbose_name = "Admin paroli"
         verbose_name_plural = "Admin parollari"
-    
+
     def __str__(self):
         return f"{self.user.username} - Parol"
 
 
 class Rules(models.Model):
-    """Qonun va qoidalar"""
     video_url = models.URLField(max_length=500, blank=True, null=True, verbose_name="Video URL")
     video_file = models.FileField(upload_to='rules_videos/', blank=True, null=True, verbose_name="Video fayl")
     image1 = models.ImageField(upload_to='rules_images/', blank=True, null=True, verbose_name="Rasm 1")
-    image1_title = models.CharField(max_length=200, blank=True, default="Imtihon tartibi", verbose_name="Rasm 1 sarlavhasi")
-    image1_description = models.TextField(blank=True, default="Imtihon vaqtida nimalarga e'tibor berish kerak", verbose_name="Rasm 1 tavsifi")
+    image1_title = models.CharField(max_length=200, blank=True, default="Imtihon tartibi")
+    image1_description = models.TextField(blank=True, default="Imtihon vaqtida nimalarga e'tibor berish kerak")
     image2 = models.ImageField(upload_to='rules_images/', blank=True, null=True, verbose_name="Rasm 2")
-    image2_title = models.CharField(max_length=200, blank=True, default="Baholash mezonlari", verbose_name="Rasm 2 sarlavhasi")
-    image2_description = models.TextField(blank=True, default="Qanday qilib yuqori ball olish mumkin", verbose_name="Rasm 2 tavsifi")
+    image2_title = models.CharField(max_length=200, blank=True, default="Baholash mezonlari")
+    image2_description = models.TextField(blank=True, default="Qanday qilib yuqori ball olish mumkin")
     rules_text = models.TextField(default="""1. Telefon va qurilmalardan foydalanish QAT'IY MAN ETILADI
 2. Belgilangan vaqtda topshirish shart
 3. Ko'chirish qat'iyan man etiladi
 4. Texnik muammoda o'qituvchiga murojaat qiling
-5. Natijalar tekshiruvdan keyin e'lon qilinadi""", verbose_name="Qoidalar matni")
+5. Natijalar tekshiruvdan keyin e'lon qilinadi""")
     updated_at = models.DateTimeField(auto_now=True)
-    
+
     class Meta:
         verbose_name = "Qonun va qoidalar"
         verbose_name_plural = "Qonun va qoidalar"
-    
+
     def __str__(self):
         return "Qonun va qoidalar"
-    
+
     def get_video_url(self):
-        """YouTube URL ni embed URL ga o'zgartirish"""
         if self.video_url:
             if 'youtube.com/watch?v=' in self.video_url:
                 video_id = self.video_url.split('v=')[1].split('&')[0]
@@ -265,62 +630,113 @@ class Rules(models.Model):
         return self.video_url
 
 
-# Backward compatibility uchun alias (views.py da Question import qilinsa ishlashi uchun)
-Question = QuizQuestion
-
-
-
-
-
-
-
-# models.py ga qo'shimcha
-
-class QuestionType(models.TextChoices):
-    """Savol turlari"""
-    FILL_BLANK = 'fill_blank', 'Bosh joy toldirish'
-    SENTENCE_ARRANGEMENT = 'sentence_arrangement', 'So\'zlarni tartibga solish'
-    MULTIPLE_CHOICE = 'multiple_choice', 'Test varianti'
-    TRUE_FALSE = 'true_false', 'To\'g\'ri/Noto\'g\'ri'
-
-
-class QuizQuestion(models.Model):
-    """Test savollari - YANGILANGAN"""
-    category = models.ForeignKey(Category, on_delete=models.CASCADE, related_name='quiz_questions', verbose_name="Kategoriya")
-    question_type = models.CharField(
-        max_length=30, 
-        choices=QuestionType.choices, 
-        default=QuestionType.FILL_BLANK,
-        verbose_name="Savol turi"
-    )
-    question_text = models.TextField(verbose_name="Savol matni", blank=True, null=True)
-    correct_answer = models.CharField(max_length=500, verbose_name="To'g'ri javob", blank=True, null=True)
-    
-    # SENTENCE ARRANGEMENT uchun yangi maydonlar
-    scrambled_words = models.TextField(
-        blank=True, null=True, 
-        verbose_name="Chalkashtirilgan so'zlar (sentence arrangement)",
-        help_text="Masalan: he / go / school / I / to"
-    )
-    correct_sentence = models.TextField(
-        blank=True, null=True,
-        verbose_name="To'g'ri gap (sentence arrangement)",
-        help_text="Masalan: I go to school"
-    )
-    
+class CategoryGroupConfig(models.Model):
+    category = models.ForeignKey(Category, on_delete=models.CASCADE, related_name='group_configs')
+    group = models.ForeignKey(Group, on_delete=models.CASCADE, related_name='category_configs')
+    questions_count = models.IntegerField(default=5, verbose_name="Savollar soni")
+    random_order = models.BooleanField(default=True, verbose_name="Random tartib")
+    is_active = models.BooleanField(default=True, verbose_name="Faol")
     created_at = models.DateTimeField(auto_now_add=True)
-    
+    updated_at = models.DateTimeField(auto_now=True)
+
     class Meta:
-        verbose_name = "Savol"
-        verbose_name_plural = "Savollar"
-        ordering = ['category__name', 'id']
-    
+        verbose_name = "Kategoriya guruh sozlamasi"
+        verbose_name_plural = "Kategoriya guruh sozlamalari"
+        unique_together = ['category', 'group']
+
     def __str__(self):
-        type_label = dict(QuestionType.choices).get(self.question_type, 'Noma\'lum')
-        return f"[{type_label}] {self.question_text[:50] if self.question_text else self.correct_sentence[:50]}..."
-    
-    def get_scrambled_words_list(self):
-        """Chalkashtirilgan so'zlar ro'yxatini qaytaradi"""
-        if self.scrambled_words:
-            return [w.strip() for w in self.scrambled_words.split('/') if w.strip()]
-        return []
+        return f"{self.category.name} -> {self.group.name} ({self.questions_count} savol)"
+
+
+class StudentQuestionHistory(models.Model):
+    student = models.ForeignKey(Student, on_delete=models.CASCADE, related_name='question_history')
+    category = models.ForeignKey(Category, on_delete=models.CASCADE)
+    question = models.ForeignKey(QuizQuestion, on_delete=models.CASCADE)
+    seen_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        unique_together = ['student', 'category', 'question']
+        ordering = ['seen_at']
+
+    def __str__(self):
+        return f"{self.student.full_name} - {self.category.name} - {self.question.id}"
+
+
+class GroupExamConfig(models.Model):
+    group = models.OneToOneField(Group, on_delete=models.CASCADE, related_name='exam_config')
+    use_category_configs = models.BooleanField(default=True, verbose_name="Kategoriya sozlamalaridan foydalanish")
+    questions_per_student = models.IntegerField(default=10, verbose_name="Har talaba uchun savollar soni")
+    total_questions = models.IntegerField(default=10, verbose_name="Jami savollar soni")
+    random_order = models.BooleanField(default=True, verbose_name="Random tartib")
+    show_correct_answer = models.BooleanField(default=False, verbose_name="To'g'ri javobni ko'rsatish")
+    time_limit = models.IntegerField(default=0, verbose_name="Vaqt limiti (daqiqa)")
+    max_attempts = models.IntegerField(default=1, verbose_name="Maksimal urinishlar")
+
+    # Audio sozlamalari (guruh uchun umumiy, eski)
+    audio_file = models.FileField(upload_to='exam_audio/', blank=True, null=True, verbose_name="Imtihon audio fayli")
+    max_audio_plays = models.IntegerField(default=1, verbose_name="Audio necha marta eshitilishi mumkin")
+    audio_instruction = models.TextField(blank=True, null=True, verbose_name="Audio ko'rsatmasi")
+
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        verbose_name = "Imtihon sozlamasi"
+        verbose_name_plural = "Imtihon sozlamalari"
+
+    def __str__(self):
+        return f"{self.group.name}: {self.total_questions} savol/talaba"
+
+
+class StudentAudioPlay(models.Model):
+    """
+    Har bir student, guruh va kategoriya uchun audio eshitish hisoblagichi.
+    Asosiy maydonlar:
+    - student: kimning hisobi
+    - group: qaysi guruh
+    - category: qaysi kategoriya audiosini eshitilyapti
+    - exam_session: qaysi sessiyada (nullable)
+    - play_count: necha marta eshitgan
+    - max_plays: maksimal ruxsat etilgan marta (0=cheksiz)
+    """
+    student = models.ForeignKey(Student, on_delete=models.CASCADE, related_name='audio_plays')
+    group = models.ForeignKey(Group, on_delete=models.CASCADE)
+    category = models.ForeignKey(Category, on_delete=models.CASCADE)
+    exam_session = models.ForeignKey(
+        'QuizSession', on_delete=models.SET_NULL,
+        null=True, blank=True
+    )
+    play_count = models.IntegerField(default=0)
+    max_plays = models.IntegerField(default=1)
+    last_played_at = models.DateTimeField(auto_now=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        verbose_name = "Student audio ijrosi"
+        verbose_name_plural = "Student audio ijrolari"
+        # Har bir student + group + category + session kombinatsiyasi unique
+        unique_together = ['student', 'group', 'category', 'exam_session']
+
+    def __str__(self):
+        max_display = self.max_plays if self.max_plays > 0 else '∞'
+        return f"{self.student.full_name} | {self.category.name} | {self.play_count}/{max_display}"
+
+    def can_play(self):
+        """Yana eshitish mumkinmi?"""
+        if self.max_plays == 0:
+            return True  # Cheksiz
+        return self.play_count < self.max_plays
+
+    def increment_play(self):
+        """Eshitish sonini +1 qilish"""
+        if self.can_play():
+            self.play_count += 1
+            self.save(update_fields=['play_count', 'last_played_at'])
+            return True
+        return False
+
+    @property
+    def remaining_plays(self):
+        """Qolgan eshitish soni"""
+        if self.max_plays == 0:
+            return None  # Cheksiz
+        return max(0, self.max_plays - self.play_count)

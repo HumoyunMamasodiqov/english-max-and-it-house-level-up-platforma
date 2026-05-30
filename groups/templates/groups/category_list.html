@@ -7,6 +7,7 @@
     <div class="max-w-6xl mx-auto px-4">
         <div class="mb-6 flex justify-between items-center">
             <div>
+                <a href="{% url 'admin_panel' %}" class="text-gray-500 hover:text-gray-700 text-sm mb-2 inline-block">← Bosh sahifaga qaytish</a>
                 <h1 class="text-2xl font-bold text-gray-900">Kategoriyalar</h1>
                 <p class="text-gray-500 text-sm">Fan va bo'limlarni boshqarish</p>
             </div>
@@ -42,7 +43,7 @@
                             </td>
                             <td class="px-6 py-3 text-center">
                                 <div class="flex items-center justify-center space-x-3">
-                                    <a href="{% url 'category_questions_list' cat.id %}" class="text-blue-400 hover:text-blue-600" title="Savollar">
+                                    <a href="{% url 'admin_question_add'  %}" class="text-blue-400 hover:text-blue-600" title="Savollar">
                                         <i class="fas fa-question-circle"></i>
                                     </a>
                                     <a href="{% url 'category_edit' cat.id %}" class="text-gray-400 hover:text-gray-600" title="Tahrirlash">

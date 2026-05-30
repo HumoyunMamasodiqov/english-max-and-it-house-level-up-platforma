@@ -1,3 +1,4 @@
+from django.contrib.admin.views.decorators import staff_member_required
 from django.shortcuts import render, redirect, get_object_or_404
 from django.contrib import messages
 from django.contrib.auth import login, authenticate, logout
@@ -6,45 +7,113 @@ from django.contrib.auth.models import User
 from django.contrib.auth.hashers import make_password
 from django.http import JsonResponse
 from django.views.decorators.csrf import csrf_exempt
+from django.views.decorators.http import require_http_methods
 from django.utils import timezone
 from django.db.models import Q, Count
 from django.db import transaction
+from django.core.cache import cache
+from django.template.defaulttags import register
 import json
 import random
-
+from datetime import datetime
 from .models import (
-    Group, Student, ExamSession, ExamResult, ExamControl, 
+    Group, Student, ExamSession, ExamResult, ExamControl,
     AdminPassword, Rules, QuizQuestion, QuizSession, QuizResult,
-    Category, GroupCategory, GroupExamConfig, UserExamAttempt
+    Category, GroupCategory, GroupExamConfig, UserExamAttempt,
+    CategoryGroupConfig, StudentQuestionHistory,
+    ReadingText, ReadingQuestion, StudentAudioPlay
 )
 from .forms import GroupForm, RegisterForm, LoginForm
 
 
-# ============ YORDAMCHI FUNKSIYALAR ============
 def is_admin_user(user):
-    """Admin yoki superuser ekanligini tekshirish"""
-    return user.is_staff or user.is_superuser
+    return user.is_authenticated and (user.is_staff or user.is_superuser)
 
 
 def is_superuser(user):
-    """Superuser ekanligini tekshirish"""
-    return user.is_superuser
+    return user.is_authenticated and user.is_superuser
 
 
-# ============ ASOSIY SAHIFALAR ============
+@register.filter
+def get_item(dictionary, key):
+    if dictionary is None:
+        return ''
+    return dictionary.get(str(key), '')
+
+
+@register.filter
+def get_fill_blank_words(questions):
+    if not questions:
+        return []
+    words = set()
+    for q in questions:
+        if q.question_type == 'fill_blank':
+            for opt in q.get_options_list():
+                if opt:
+                    words.add(opt.strip())
+    return list(words)
+
+
+def check_answer_correctness(question, user_answer):
+    if not user_answer:
+        return False
+    if isinstance(user_answer, str):
+        user_answer = user_answer.strip()
+    if not user_answer:
+        return False
+
+    user_clean = str(user_answer).strip().lower()
+
+    if question.question_type == 'fill_blank':
+        if '|' in question.correct_answer:
+            variants = [v.strip().lower() for v in question.correct_answer.split('|') if v.strip()]
+            return user_clean in variants
+        return user_clean == question.correct_answer.strip().lower()
+
+    elif question.question_type == 'sentence_arrangement':
+        user_sentence = ' '.join(user_answer.split()).strip().lower()
+        correct_sentence = ' '.join(question.correct_sentence.split()).strip().lower()
+        return user_sentence == correct_sentence
+
+    elif question.question_type == 'matching':
+        try:
+            correct = json.loads(question.correct_answer)
+            if isinstance(user_answer, dict):
+                for k, v in correct.items():
+                    user_val = user_answer.get(k, '')
+                    if str(user_val).strip().lower() != str(v).strip().lower():
+                        return False
+                return True
+        except:
+            pass
+        return False
+
+    else:
+        return user_clean == question.correct_answer.strip().lower()
+
+
+def get_correct_answer_display(question):
+    if question.question_type == 'fill_blank':
+        if '|' in question.correct_answer:
+            return question.correct_answer.split('|')[0].strip()
+        return question.correct_answer.strip()
+    elif question.question_type == 'sentence_arrangement':
+        return question.correct_sentence or ''
+    elif question.correct_answer:
+        return question.correct_answer
+    return ''
+
+
 def home(request):
-    """Asosiy sahifa"""
     return render(request, 'groups/home.html')
 
 
 def user_login(request):
-    """Foydalanuvchi tizimga kirishi"""
     if request.user.is_authenticated:
         if is_admin_user(request.user):
             return redirect('admin_panel')
-        else:
-            return redirect('student_panel')
-    
+        return redirect('student_panel')
+
     if request.method == 'POST':
         form = LoginForm(request, data=request.POST)
         if form.is_valid():
@@ -56,23 +125,21 @@ def user_login(request):
                 messages.success(request, f'Xush kelibsiz, {user.get_full_name() or user.username}!')
                 if is_admin_user(user):
                     return redirect('admin_panel')
-                else:
-                    return redirect('student_panel')
+                return redirect('student_panel')
             else:
                 messages.error(request, 'Username yoki parol xato!')
         else:
             messages.error(request, 'Username yoki parol xato!')
     else:
         form = LoginForm()
-    
+
     return render(request, 'groups/login.html', {'form': form, 'title': 'Tizimga kirish'})
 
 
 def user_register(request):
-    """Yangi foydalanuvchi ro'yxatdan o'tishi"""
     if request.user.is_authenticated:
         return redirect('home')
-    
+
     if request.method == 'POST':
         form = RegisterForm(request.POST)
         if form.is_valid():
@@ -88,9 +155,7 @@ def user_register(request):
                     student, created = Student.objects.get_or_create(user=user)
                     student.group = group
                     student.save()
-                    
-                    messages.success(request, f'Tabriklaymiz! Siz muvaffaqiyatli ro\'yxatdan o\'tdingiz!')
-                    messages.info(request, f'Siz {group.name} guruhiga qo\'shildingiz!')
+                    messages.success(request, 'Tabriklaymiz! Siz muvaffaqiyatli ro\'yxatdan o\'tdingiz!')
                     login(request, user)
                     return redirect('student_panel')
             except Exception as e:
@@ -101,33 +166,29 @@ def user_register(request):
                     messages.error(request, f'{error}')
     else:
         form = RegisterForm()
-    
+
     return render(request, 'groups/register.html', {'form': form, 'title': 'Ro\'yxatdan o\'tish'})
 
 
 def user_logout(request):
-    """Tizimdan chiqish"""
     logout(request)
     messages.info(request, 'Tizimdan chiqdingiz!')
     return redirect('home')
 
 
-# ============ ADMIN PANEL ============
 @login_required
 @user_passes_test(is_admin_user)
 def admin_panel(request):
-    """Admin boshqaruv paneli"""
     groups = Group.objects.all()
     students = Student.objects.all().select_related('user', 'group')
     admins = User.objects.filter(Q(is_staff=True) | Q(is_superuser=True)).distinct()
-    
-    # Har bir guruh uchun exam_config va exam_control yaratish
+
     for group in groups:
         if not hasattr(group, 'exam_config'):
             GroupExamConfig.objects.create(group=group)
         if not hasattr(group, 'exam_control'):
             ExamControl.objects.create(group=group)
-    
+
     context = {
         'groups': groups,
         'students': students,
@@ -141,18 +202,30 @@ def admin_panel(request):
     return render(request, 'groups/admin_panel.html', context)
 
 
-# ============ GROUP FUNKSIYALARI ============
 @login_required
 def group_detail(request, pk):
-    """Guruh tafsilotlari"""
     group = get_object_or_404(Group, pk=pk)
+    if not is_admin_user(request.user):
+        messages.error(request, 'Sizda bu sahifani ko\'rish huquqi yo\'q!')
+        return redirect('home')
+
     students = group.students.all().select_related('user')
+    group_categories = GroupCategory.objects.filter(group=group, is_active=True).select_related('category')
+    category_ids = group_categories.values_list('category_id', flat=True)
+    total_questions = QuizQuestion.objects.filter(category_id__in=category_ids).count()
+    quiz_sessions = QuizSession.objects.filter(group=group)
+    completed_exams = QuizResult.objects.filter(quiz_session__in=quiz_sessions).count()
     exam_control, created = ExamControl.objects.get_or_create(group=group)
-    
+    config, _ = GroupExamConfig.objects.get_or_create(group=group)
+
     context = {
         'group': group,
         'students': students,
+        'group_categories': group_categories,
+        'total_questions': total_questions,
+        'completed_exams': completed_exams,
         'exam_control': exam_control,
+        'config': config,
     }
     return render(request, 'groups/group_detail.html', context)
 
@@ -160,12 +233,10 @@ def group_detail(request, pk):
 @login_required
 @user_passes_test(is_admin_user)
 def group_add(request):
-    """Yangi guruh qo'shish"""
     if request.method == 'POST':
         form = GroupForm(request.POST)
         if form.is_valid():
             group = form.save()
-            # Avtomatik exam_config va exam_control yaratish
             GroupExamConfig.objects.get_or_create(group=group)
             ExamControl.objects.get_or_create(group=group)
             messages.success(request, f'"{group.name}" guruhi muvaffaqiyatli qo\'shildi!')
@@ -181,7 +252,6 @@ def group_add(request):
 @login_required
 @user_passes_test(is_admin_user)
 def group_edit(request, pk):
-    """Guruhni tahrirlash"""
     group = get_object_or_404(Group, pk=pk)
     if request.method == 'POST':
         form = GroupForm(request.POST, instance=group)
@@ -200,7 +270,6 @@ def group_edit(request, pk):
 @login_required
 @user_passes_test(is_admin_user)
 def group_delete(request, pk):
-    """Guruhni o'chirish"""
     group = get_object_or_404(Group, pk=pk)
     if request.method == 'POST':
         group_name = group.name
@@ -210,11 +279,9 @@ def group_delete(request, pk):
     return render(request, 'groups/group_confirm_delete.html', {'group': group})
 
 
-# ============ STUDENT/USER FUNKSIYALARI ============
 @login_required
 @user_passes_test(is_admin_user)
 def student_list(request):
-    """Barcha foydalanuvchilar ro'yxati"""
     students = Student.objects.all().select_related('user', 'group')
     return render(request, 'groups/student_list.html', {'students': students})
 
@@ -222,7 +289,6 @@ def student_list(request):
 @login_required
 @user_passes_test(is_admin_user)
 def student_add(request):
-    """Yangi foydalanuvchi qo'shish"""
     if request.method == 'POST':
         form = RegisterForm(request.POST)
         if form.is_valid():
@@ -252,7 +318,6 @@ def student_add(request):
 @login_required
 @user_passes_test(is_admin_user)
 def student_edit(request, pk):
-    """Foydalanuvchini tahrirlash"""
     student = get_object_or_404(Student, pk=pk)
     if request.method == 'POST':
         try:
@@ -261,29 +326,29 @@ def student_edit(request, pk):
             first_name = request.POST.get('first_name', '').strip()
             last_name = request.POST.get('last_name', '').strip()
             group_id = request.POST.get('group')
-            
+
             if not username:
                 messages.error(request, 'Username kiritilishi shart!')
                 return redirect('student_edit', pk=pk)
-            
+
             if User.objects.filter(username=username).exclude(id=user.id).exists():
                 messages.error(request, f'"{username}" username allaqachon mavjud!')
                 return redirect('student_edit', pk=pk)
-            
+
             user.username = username
             user.first_name = first_name
             user.last_name = last_name
             user.save()
-            
+
             if group_id:
                 student.group = Group.objects.get(id=group_id)
                 student.save()
-            
+
             messages.success(request, f'{user.get_full_name()} tahrirlandi!')
             return redirect('student_list')
         except Exception as e:
             messages.error(request, f'Xatolik: {str(e)}')
-    
+
     context = {
         'student': student,
         'groups': Group.objects.all(),
@@ -294,7 +359,6 @@ def student_edit(request, pk):
 @login_required
 @user_passes_test(is_admin_user)
 def student_delete(request, pk):
-    """Foydalanuvchini o'chirish"""
     student = get_object_or_404(Student, pk=pk)
     if request.method == 'POST':
         user = student.user
@@ -308,16 +372,15 @@ def student_delete(request, pk):
 
 @login_required
 def student_panel(request):
-    """Talaba shaxsiy paneli"""
     try:
         student = request.user.student_profile
         rules = Rules.objects.first()
-        
+
         exam_active = False
         if student.group:
             exam_control, created = ExamControl.objects.get_or_create(group=student.group)
             exam_active = exam_control.is_active
-        
+
         context = {
             'student': student,
             'rules': rules,
@@ -332,65 +395,62 @@ def student_panel(request):
         return redirect('home')
 
 
-# ============ ADMIN BOSHQARUVI ============
+@login_required
+@user_passes_test(is_admin_user)
+def student_bulk_delete(request):
+    if request.method == 'POST':
+        student_ids = request.POST.getlist('student_ids')
+        if not student_ids:
+            messages.warning(request, "Hech qanday foydalanuvchi tanlanmagan!")
+            return redirect('student_list')
+
+        students = Student.objects.filter(pk__in=student_ids)
+        student_count = students.count()
+        users_to_delete = [student.user for student in students]
+        students.delete()
+        for user in users_to_delete:
+            user.delete()
+
+        messages.success(request, f"{student_count} ta foydalanuvchi muvaffaqiyatli o'chirildi!")
+    return redirect('student_list')
+
+
 @login_required
 @user_passes_test(is_superuser)
 def make_admin(request):
-    """Foydalanuvchini admin qilish"""
     if request.method == 'POST':
         user_id = request.POST.get('user_id')
         is_superuser_val = request.POST.get('is_superuser') == 'on'
-        
         try:
             user = User.objects.get(id=user_id)
             user.is_staff = True
             if is_superuser_val:
                 user.is_superuser = True
             user.save()
-            
             role = "SUPERUSER" if is_superuser_val else "ADMIN"
             messages.success(request, f'{user.get_full_name()} muvaffaqiyatli {role} qilindi!')
         except User.DoesNotExist:
             messages.error(request, 'Foydalanuvchi topilmadi!')
         except Exception as e:
             messages.error(request, f'Xatolik: {str(e)}')
-        
-        return redirect('admin_panel')
-    
     return redirect('admin_panel')
 
 
-from django.contrib.auth.models import User
-from django.shortcuts import render
-from django.contrib.auth.decorators import login_required, user_passes_test
-
 @login_required
 def admin_list(request):
-    """Adminlar ro'yxatini ko'rsatish"""
-    
-    # Admin va superuserlarni olish
-    admins = User.objects.filter(
-        is_staff=True
-    ).order_by('-is_superuser', 'username')  # Superuserlar birinchi chiqadi
-    
-    # Staff=True bo'lgan barcha userlar admin hisoblanadi
-    
-    context = {
-        'admins': admins,
-    }
-    return render(request, 'groups/admin_list.html', context)
+    admins = User.objects.filter(is_staff=True).order_by('-is_superuser', 'username')
+    return render(request, 'groups/admin_list.html', {'admins': admins})
+
 
 @login_required
 @user_passes_test(is_superuser)
 def remove_admin(request, user_id):
-    """Adminni oddiy foydalanuvchiga aylantirish"""
     if request.method != 'POST':
         messages.error(request, 'Faqat POST so\'rov qabul qilinadi!')
         return redirect('admin_list')
-    
+
     try:
         user = User.objects.get(id=user_id)
-        
         if user.is_superuser and request.user.id == user.id:
             messages.error(request, "O'zingizni superuserlikdan chiqara olmaysiz!")
         else:
@@ -403,14 +463,12 @@ def remove_admin(request, user_id):
         messages.error(request, 'Foydalanuvchi topilmadi!')
     except Exception as e:
         messages.error(request, f'Xatolik: {str(e)}')
-    
     return redirect('admin_list')
 
 
 @login_required
 @user_passes_test(is_superuser)
 def admin_add(request):
-    """Yangi admin qo'shish"""
     if request.method == 'POST':
         first_name = request.POST.get('first_name', '').strip()
         last_name = request.POST.get('last_name', '').strip()
@@ -419,68 +477,48 @@ def admin_add(request):
         password_confirm = request.POST.get('password_confirm', '')
         is_superuser_val = request.POST.get('is_superuser') == 'on'
         email = request.POST.get('email', '').strip()
-        
+
         errors = []
-        if not first_name:
-            errors.append("Ism kiritilishi shart!")
-        if not last_name:
-            errors.append("Familiya kiritilishi shart!")
-        if not username:
-            errors.append("Username kiritilishi shart!")
-        if not password:
-            errors.append("Parol kiritilishi shart!")
-        if len(password) < 4:
-            errors.append("Parol kamida 4 ta belgidan iborat bo'lishi kerak!")
-        if password != password_confirm:
-            errors.append("Parollar mos kelmadi!")
-        if User.objects.filter(username=username).exists():
-            errors.append(f"'{username}' username allaqachon mavjud!")
-        
+        if not first_name: errors.append("Ism kiritilishi shart!")
+        if not last_name: errors.append("Familiya kiritilishi shart!")
+        if not username: errors.append("Username kiritilishi shart!")
+        if not password: errors.append("Parol kiritilishi shart!")
+        if len(password) < 4: errors.append("Parol kamida 4 ta belgidan iborat bo'lishi kerak!")
+        if password != password_confirm: errors.append("Parollar mos kelmadi!")
+        if User.objects.filter(username=username).exists(): errors.append(f"'{username}' username allaqachon mavjud!")
+
         if errors:
             for error in errors:
                 messages.error(request, error)
             return render(request, 'groups/admin_add.html')
-        
+
         try:
             with transaction.atomic():
                 admin_user = User.objects.create(
-                    username=username,
-                    first_name=first_name,
-                    last_name=last_name,
-                    email=email,
-                    password=make_password(password),
-                    is_staff=True,
-                    is_superuser=is_superuser_val,
-                    is_active=True
+                    username=username, first_name=first_name, last_name=last_name,
+                    email=email, password=make_password(password),
+                    is_staff=True, is_superuser=is_superuser_val, is_active=True
                 )
-                
-                AdminPassword.objects.create(
-                    user=admin_user,
-                    plain_password=password
-                )
-                
+                AdminPassword.objects.create(user=admin_user, plain_password=password)
                 role = "SUPERUSER" if is_superuser_val else "ADMIN"
                 messages.success(request, f'{first_name} {last_name} {role} sifatida qo\'shildi!')
-                messages.info(request, f'Login: {username} | Parol: {password}')
                 return redirect('admin_list')
         except Exception as e:
             messages.error(request, f'Xatolik: {str(e)}')
-    
+
     return render(request, 'groups/admin_add.html')
 
 
 @login_required
 @user_passes_test(is_superuser)
 def admin_edit(request, admin_id):
-    """Adminni tahrirlash"""
     admin = get_object_or_404(User, id=admin_id)
-    
     try:
         admin_pass = AdminPassword.objects.get(user=admin)
         plain_password = admin_pass.plain_password
     except AdminPassword.DoesNotExist:
         plain_password = ''
-    
+
     if request.method == 'POST':
         first_name = request.POST.get('first_name', '').strip()
         last_name = request.POST.get('last_name', '').strip()
@@ -489,21 +527,14 @@ def admin_edit(request, admin_id):
         password = request.POST.get('password', '')
         password_confirm = request.POST.get('password_confirm', '')
         is_superuser_val = request.POST.get('is_superuser') == 'on'
-        
+
         errors = []
-        
-        if not username:
-            errors.append("Username kiritilishi shart!")
-        
+        if not username: errors.append("Username kiritilishi shart!")
         if User.objects.filter(username=username).exclude(id=admin.id).exists():
             errors.append(f"'{username}' username allaqachon mavjud!")
-        
-        if password and password != password_confirm:
-            errors.append("Parollar mos kelmadi!")
-        
-        if password and len(password) < 4:
-            errors.append("Parol kamida 4 ta belgidan iborat bo'lishi kerak!")
-        
+        if password and password != password_confirm: errors.append("Parollar mos kelmadi!")
+        if password and len(password) < 4: errors.append("Parol kamida 4 ta belgidan iborat bo'lishi kerak!")
+
         if errors:
             for error in errors:
                 messages.error(request, error)
@@ -516,74 +547,49 @@ def admin_edit(request, admin_id):
                     admin.email = email
                     admin.is_superuser = is_superuser_val
                     admin.is_staff = True
-                    
                     if password:
                         admin.set_password(password)
-                        admin_pass, created = AdminPassword.objects.get_or_create(user=admin)
-                        admin_pass.plain_password = password
-                        admin_pass.save()
-                    
+                        admin_pass_obj, _ = AdminPassword.objects.get_or_create(user=admin)
+                        admin_pass_obj.plain_password = password
+                        admin_pass_obj.save()
                     admin.save()
                     messages.success(request, f'{admin.get_full_name()} ma\'lumotlari yangilandi!')
                     return redirect('admin_list')
             except Exception as e:
                 messages.error(request, f'Xatolik: {str(e)}')
-    
-    context = {
-        'admin': admin,
-        'plain_password': plain_password,
-    }
-    return render(request, 'groups/admin_edit.html', context)
 
+    return render(request, 'groups/admin_edit.html', {'admin': admin, 'plain_password': plain_password})
 
-from django.contrib.auth.models import User
-from django.shortcuts import redirect, get_object_or_404
-from django.contrib import messages
-from django.contrib.auth.decorators import login_required, user_passes_test
 
 @login_required
-@user_passes_test(lambda u: u.is_superuser)  # Faqat superuser o'chira oladi
+@user_passes_test(is_superuser)
 def admin_delete(request, user_id):
-    """Adminni o'chirish (faqat superuser)"""
-    
-    # O'chiriladigan adminni topish
     admin_to_delete = get_object_or_404(User, id=user_id)
-    
-    # O'zini o'chirishni oldini olish
     if admin_to_delete.id == request.user.id:
         messages.error(request, "O'zingizni o'chira olmaysiz!")
         return redirect('admin_list')
-    
-    # Superuserni o'chirishni oldini olish (agar xohlamasangiz)
     if admin_to_delete.is_superuser:
         messages.error(request, "Superuserni o'chira olmaysiz!")
         return redirect('admin_list')
-    
-    # Admin nomini eslab qolish
     admin_name = admin_to_delete.get_full_name() or admin_to_delete.username
-    
     try:
-        # Adminni o'chirish
         admin_to_delete.delete()
         messages.success(request, f'"{admin_name}" admini muvaffaqiyatli o\'chirildi!')
     except Exception as e:
         messages.error(request, f'Xatolik yuz berdi: {str(e)}')
-    
     return redirect('admin_list')
+
 
 @login_required
 @user_passes_test(is_superuser)
 def admin_get_plain_password(request, admin_id):
-    """Admin parolini olish (API)"""
     try:
         admin = User.objects.get(id=admin_id)
-        
         try:
             admin_pass = AdminPassword.objects.get(user=admin)
             plain_password = admin_pass.plain_password
         except AdminPassword.DoesNotExist:
             plain_password = "Parol saqlanmagan"
-        
         return JsonResponse({
             'success': True,
             'admin_id': admin.id,
@@ -601,909 +607,35 @@ def admin_get_plain_password(request, admin_id):
 @login_required
 @user_passes_test(is_superuser)
 def admin_update_password(request):
-    """Admin parolini yangilash (API)"""
-    if request.method == 'POST':
-        try:
-            admin_id = request.POST.get('admin_id')
-            new_password = request.POST.get('password', '').strip()
-            
-            if not new_password:
-                return JsonResponse({'success': False, 'message': 'Parol kiritilishi shart!'})
-            
-            if len(new_password) < 4:
-                return JsonResponse({'success': False, 'message': 'Parol kamida 4 belgi bo\'lishi kerak!'})
-            
-            admin = User.objects.get(id=admin_id)
-            
-            with transaction.atomic():
-                admin.set_password(new_password)
-                admin.save()
-                
-                admin_pass, created = AdminPassword.objects.get_or_create(user=admin)
-                admin_pass.plain_password = new_password
-                admin_pass.save()
-            
-            return JsonResponse({'success': True, 'message': 'Parol muvaffaqiyatli yangilandi!'})
-        except User.DoesNotExist:
-            return JsonResponse({'success': False, 'message': 'Admin topilmadi!'})
-        except Exception as e:
-            return JsonResponse({'success': False, 'message': f'Xatolik: {str(e)}'})
-    
-    return JsonResponse({'success': False, 'message': 'Faqat POST so\'rov qabul qilinadi!'})
-
-
-# ============ QUIZ ADMIN FUNKSIYALARI ============
-@login_required
-@user_passes_test(is_admin_user)
-def quiz_admin(request):
-    """Quiz adminpaneli"""
-    questions = QuizQuestion.objects.all().select_related('category').order_by('-created_at')
-    categories = Category.objects.all()
-    groups = Group.objects.all()
-    
-    context = {
-        'questions': questions,
-        'categories': categories,
-        'groups': groups,
-    }
-    return render(request, 'groups/quiz_admin.html', context)
-
-
-@login_required
-@user_passes_test(is_admin_user)
-def quiz_add_question(request):
-    """Yangi savol qo'shish"""
-    if request.method == 'POST':
-        category_id = request.POST.get('category_id')
-        question_text = request.POST.get('question_text', '').strip()
-        correct_answer = request.POST.get('correct_answer', '').strip().lower()
-        
-        if not question_text or not correct_answer:
-            messages.error(request, 'Savol matni va to\'g\'ri javob kiritilishi shart!')
-            return redirect('quiz_admin')
-        
-        if category_id and category_id != '':
-            try:
-                category = Category.objects.get(id=category_id)
-                QuizQuestion.objects.create(
-                    category=category,
-                    question_text=question_text,
-                    correct_answer=correct_answer
-                )
-                messages.success(request, f'Savol "{category.name}" kategoriyasiga qo\'shildi!')
-            except Category.DoesNotExist:
-                messages.error(request, 'Kategoriya topilmadi!')
-        else:
-            messages.error(request, 'Kategoriya tanlash shart!')
-        
-        return redirect('quiz_admin')
-    
-    return redirect('quiz_admin')
-
-
-@login_required
-@user_passes_test(is_admin_user)
-def quiz_edit_question(request, question_id):
-    """Savolni tahrirlash"""
-    question = get_object_or_404(QuizQuestion, id=question_id)
-    
-    if request.method == 'POST':
-        category_id = request.POST.get('category_id')
-        question_text = request.POST.get('question_text', '').strip()
-        correct_answer = request.POST.get('correct_answer', '').strip().lower()
-        
-        if not question_text or not correct_answer:
-            messages.error(request, 'Savol matni va to\'g\'ri javob kiritilishi shart!')
-        else:
-            try:
-                question.question_text = question_text
-                question.correct_answer = correct_answer
-                
-                if category_id and category_id != '':
-                    question.category = Category.objects.get(id=category_id)
-                
-                question.save()
-                messages.success(request, 'Savol muvaffaqiyatli tahrirlandi!')
-            except Category.DoesNotExist:
-                messages.error(request, 'Kategoriya topilmadi!')
-            except Exception as e:
-                messages.error(request, f'Xatolik: {str(e)}')
-        
-        return redirect('quiz_admin')
-    
-    categories = Category.objects.all()
-    context = {
-        'question': question,
-        'categories': categories,
-    }
-    return render(request, 'groups/quiz_edit.html', context)
-
-
-@login_required
-@user_passes_test(is_admin_user)
-def quiz_delete_question(request, question_id):
-    """Savolni o'chirish"""
-    question = get_object_or_404(QuizQuestion, id=question_id)
-    question.delete()
-    messages.success(request, 'Savol o\'chirildi!')
-    return redirect('quiz_admin')
-
-
-# ============ QUIZ SESSION BOSHQARUV ============
-from django.http import JsonResponse
-from django.views.decorators.csrf import csrf_exempt
-from django.views.decorators.http import require_http_methods
-from django.contrib.auth.decorators import login_required, user_passes_test
-from django.core.cache import cache
-from django.utils import timezone
-from .models import Group, ExamControl, ExamSession
-import json
-from datetime import datetime
-
-@login_required
-@user_passes_test(lambda u: u.is_staff)
-@csrf_exempt
-@require_http_methods(["POST"])
-def start_exam_api(request):
-    """Testni boshlash API"""
-    try:
-        data = json.loads(request.body)
-        group_id = data.get('group_id')
-        
-        if not group_id:
-            return JsonResponse({'success': False, 'message': 'group_id kerak'})
-        
-        # Guruhni tekshirish
-        try:
-            group = Group.objects.get(id=group_id)
-        except Group.DoesNotExist:
-            return JsonResponse({'success': False, 'message': 'Guruh topilmadi'})
-        
-        # ExamControl ni yangilash yoki yaratish
-        exam_control, created = ExamControl.objects.get_or_create(group=group)
-        exam_control.is_active = True
-        exam_control.started_at = timezone.now()
-        exam_control.save()
-        
-        # Cache ga saqlash (MUHIM!)
-        cache_key = f'exam_active_{group_id}'
-        cache.set(cache_key, True, timeout=7200)  # 2 soat
-        cache.set(f'exam_started_{group_id}', datetime.now().strftime('%H:%M:%S'), timeout=7200)
-        
-        # Session ga ham saqlash
-        request.session[f'exam_active_{group_id}'] = True
-        request.session[f'exam_started_{group_id}'] = datetime.now().strftime('%H:%M:%S')
-        request.session.modified = True
-        
-        # ExamSession yaratish (agar kerak bo'lsa)
-        ExamSession.objects.create(
-            group=group,
-            is_active=True,
-            started_at=timezone.now(),
-            created_by=request.user
-        )
-        
-        print(f"✅ Test boshlandi - Guruh: {group.name} (ID: {group_id})")
-        print(f"   Cache: {cache.get(cache_key)}")
-        
-        return JsonResponse({
-            'success': True, 
-            'message': f'Test boshlandi! Studentlar endi test topshirishi mumkin.',
-            'is_active': True
-        })
-        
-    except Exception as e:
-        print(f"❌ Xatolik: {str(e)}")
-        return JsonResponse({'success': False, 'message': f'Xatolik: {str(e)}'})
-
-@login_required
-@user_passes_test(lambda u: u.is_staff)
-@csrf_exempt
-@require_http_methods(["POST"])
-def stop_exam_api(request):
-    """Testni to'xtatish API"""
-    try:
-        data = json.loads(request.body)
-        group_id = data.get('group_id')
-        
-        if not group_id:
-            return JsonResponse({'success': False, 'message': 'group_id kerak'})
-        
-        # ExamControl ni o'chirish
-        try:
-            exam_control = ExamControl.objects.get(group_id=group_id)
-            exam_control.is_active = False
-            exam_control.save()
-        except ExamControl.DoesNotExist:
-            pass
-        
-        # Cache dan o'chirish
-        cache_key = f'exam_active_{group_id}'
-        cache.delete(cache_key)
-        cache.delete(f'exam_started_{group_id}')
-        
-        # Session dan o'chirish
-        if f'exam_active_{group_id}' in request.session:
-            del request.session[f'exam_active_{group_id}']
-        if f'exam_started_{group_id}' in request.session:
-            del request.session[f'exam_started_{group_id}']
-        request.session.modified = True
-        
-        # Aktiv ExamSession ni tugatish
-        ExamSession.objects.filter(group_id=group_id, is_active=True).update(
-            is_active=False, 
-            ended_at=timezone.now()
-        )
-        
-        print(f"⏸ Test to'xtatildi - Guruh ID: {group_id}")
-        
-        return JsonResponse({
-            'success': True, 
-            'message': f'Test to\'xtatildi! Studentlar endi test topshira olmaydi.',
-            'is_active': False
-        })
-        
-    except Exception as e:
-        print(f"❌ Xatolik: {str(e)}")
-        return JsonResponse({'success': False, 'message': f'Xatolik: {str(e)}'})
-    
-
-
-
-@csrf_exempt
-@login_required
-@user_passes_test(is_admin_user)
-def stop_exam_api(request):
-    """Testni to'xtatish (API)"""
     if request.method != 'POST':
-        return JsonResponse({'success': False, 'message': 'Faqat POST so\'rov qabul qilinadi!'})
-    
+        return JsonResponse({'success': False, 'message': 'Faqat POST so\'rov!'})
     try:
-        data = json.loads(request.body)
-        group_id = data.get('group_id')
-        
-        if not group_id:
-            return JsonResponse({'success': False, 'message': 'Guruh ID kiritilmagan!'})
-        
-        group = Group.objects.get(id=group_id)
-        
+        admin_id = request.POST.get('admin_id')
+        new_password = request.POST.get('password', '').strip()
+        if not new_password:
+            return JsonResponse({'success': False, 'message': 'Parol kiritilishi shart!'})
+        if len(new_password) < 4:
+            return JsonResponse({'success': False, 'message': 'Parol kamida 4 belgi bo\'lishi kerak!'})
+        admin = User.objects.get(id=admin_id)
         with transaction.atomic():
-            # Faol sessiyalarni yopish
-            session = QuizSession.objects.filter(group=group, is_active=True).first()
-            if session:
-                session.is_active = False
-                session.ended_at = timezone.now()
-                session.save()
-            
-            # ExamControl ni o'chirish
-            exam_control, created = ExamControl.objects.get_or_create(group=group)
-            exam_control.is_active = False
-            exam_control.save()
-        
-        return JsonResponse({
-            'success': True,
-            'message': f'⛔ Test to\'xtatildi!'
-        })
-    except Group.DoesNotExist:
-        return JsonResponse({'success': False, 'message': 'Guruh topilmadi!'})
-    except json.JSONDecodeError:
-        return JsonResponse({'success': False, 'message': 'Noto\'g\'ri JSON format!'})
+            admin.set_password(new_password)
+            admin.save()
+            admin_pass, _ = AdminPassword.objects.get_or_create(user=admin)
+            admin_pass.plain_password = new_password
+            admin_pass.save()
+        return JsonResponse({'success': True, 'message': 'Parol muvaffaqiyatli yangilandi!'})
+    except User.DoesNotExist:
+        return JsonResponse({'success': False, 'message': 'Admin topilmadi!'})
     except Exception as e:
         return JsonResponse({'success': False, 'message': f'Xatolik: {str(e)}'})
 
-from django.shortcuts import render, get_object_or_404, redirect
-from django.contrib.auth.decorators import login_required
-from django.core.cache import cache
-from .models import Group, Student, QuizResult, Question
-import random
 
-
-from django.shortcuts import render, get_object_or_404, redirect
-from django.contrib.auth.decorators import login_required
-from django.core.cache import cache
-from .models import Group, Student, QuizResult, QuizQuestion, GroupExamConfig, ExamControl
-import random
-from datetime import datetime
-
-@login_required
-def quiz_take(request, group_id):
-    """Test topshirish sahifasi"""
-    
-    # Studentni tekshirish
-    try:
-        student = Student.objects.get(user=request.user)
-    except Student.DoesNotExist:
-        return redirect('student_panel')
-    
-    # Guruhni tekshirish
-    group = get_object_or_404(Group, id=group_id)
-    
-    # Studentning guruhini tekshirish
-    if student.group_id != group.id:
-        return redirect('student_panel')
-    
-    # ============ TEST HOLATINI TEKSHIRISH ============
-    is_exam_active = False
-    started_at = None
-    
-    # 1. Cache dan tekshirish
-    cache_key = f'exam_active_{group_id}'
-    is_exam_active = cache.get(cache_key, False)
-    started_at = cache.get(f'exam_started_{group_id}', None)
-    
-    # 2. ExamControl dan tekshirish
-    if not is_exam_active:
-        try:
-            exam_control = ExamControl.objects.get(group=group)
-            is_exam_active = exam_control.is_active
-            if is_exam_active:
-                started_at = exam_control.started_at.strftime('%H:%M:%S') if exam_control.started_at else None
-                cache.set(cache_key, True, timeout=3600)
-        except ExamControl.DoesNotExist:
-            pass
-    
-    # ============ NATIJANI TEKSHIRISH (TO'G'RILANGAN) ============
-    has_result = False
-    result = None
-    
-    # QuizResult orqali tekshirish (group emas, quiz_session orqali)
-    try:
-        # Studentning shu guruhdagi so'nggi natijasini tekshirish
-        last_result = QuizResult.objects.filter(
-            student=student,
-            quiz_session__group=group  # quiz_session orqali group ga bog'lanish
-        ).order_by('-submitted_at').first()
-        
-        if last_result:
-            has_result = True
-            result = last_result
-    except Exception as e:
-        print(f"Natija tekshirish xatosi: {e}")
-    
-    # Agar test topshirilgan bo'lsa, natijani ko'rsatish
-    if has_result and result:
-        return render(request, 'groups/quiz_take.html', {
-            'group': group,
-            'student': student,
-            'is_exam_active': False,
-            'result': result,
-            'total_questions': result.total_questions,
-            'time_limit': 0,
-            'questions': []
-        })
-    
-    # Agar test faol bo'lmasa, panelga qaytarish
-    if not is_exam_active:
-        return render(request, 'groups/quiz_take.html', {
-            'group': group,
-            'student': student,
-            'is_exam_active': False,
-            'result': None,
-            'questions': [],
-            'total_questions': 0,
-            'time_limit': 0
-        })
-    
-    # ============ TEST FAQAT FAOL BO'LSA BUYERGA KELADI ============
-    
-    # Sozlamalarni olish
-    try:
-        config = GroupExamConfig.objects.get(group=group)
-        questions_per_student = config.questions_per_student
-        random_order = config.random_order
-        time_limit = config.time_limit
-    except GroupExamConfig.DoesNotExist:
-        questions_per_student = 5
-        random_order = True
-        time_limit = 0
-    
-    # Guruhga biriktirilgan kategoriyalardan savollarni olish
-    questions = []
-    group_categories = group.group_categories.filter(is_active=True)
-    
-    for gc in group_categories:
-        category_questions = list(QuizQuestion.objects.filter(category=gc.category))
-        questions.extend(category_questions)
-    
-    # Savollarni random tanlash
-    if len(questions) > questions_per_student:
-        questions = random.sample(questions, questions_per_student)
-    
-    # Savollarni aralashtirish
-    if random_order:
-        questions = random.sample(questions, len(questions))
-    
-    # Debug uchun
-    print(f"📝 Quiz take - Guruh: {group.name}, Faol: {is_exam_active}, Savollar: {len(questions)}")
-    
-    return render(request, 'groups/quiz_take.html', {
-        'group': group,
-        'student': student,
-        'is_exam_active': True,
-        'questions': questions,
-        'total_questions': len(questions),
-        'time_limit': time_limit,
-        'result': None
-    })
-
-
-@login_required
-@csrf_exempt
-def quiz_submit(request):
-    if request.method == 'POST':
-        try:
-            data = json.loads(request.body)
-            group_id = data.get('group_id')
-            answers = data.get('answers', {})
-            
-            student = Student.objects.get(user=request.user)
-            group = Group.objects.get(id=group_id)
-            
-            score = 0
-            total = 0
-            
-            for key, user_answer in answers.items():
-                if key.startswith('q_'):
-                    parts = key.split('_')
-                    if len(parts) >= 2:
-                        try:
-                            question_id = int(parts[1])
-                            question = QuizQuestion.objects.get(id=question_id)
-                            total += 1
-                            
-                            # Savol turiga qarab tekshirish
-                            if question.question_type == 'fill_blank':
-                                if user_answer.strip().lower() == question.correct_answer.strip().lower():
-                                    score += 1
-                                    
-                            elif question.question_type == 'sentence_arrangement':
-                                # Bo'shliqlarni o'chirib, kichik harfga o'tkazib solishtirish
-                                user_sentence = ' '.join(user_answer.split()).strip().lower()
-                                correct_sentence = ' '.join(question.correct_sentence.split()).strip().lower()
-                                if user_sentence == correct_sentence:
-                                    score += 1
-                                    
-                        except QuizQuestion.DoesNotExist:
-                            pass
-            
-            # Natijani saqlash...
-            # (qolgan kod)
-            
-        except Exception as e:
-            return JsonResponse({'success': False, 'message': str(e)})
-
-@login_required
-def quiz_results(request, group_id):
-    """Test natijalari"""
-    if not is_admin_user(request.user):
-        messages.error(request, 'Sizda bu sahifani ko\'rish huquqi yo\'q!')
-        return redirect('home')
-    
-    group = get_object_or_404(Group, id=group_id)
-    sessions = QuizSession.objects.filter(group=group).order_by('-started_at')
-    
-    last_session = sessions.first()
-    results = []
-    if last_session:
-        results = QuizResult.objects.filter(
-            quiz_session=last_session
-        ).select_related('student__user').order_by('-score', 'submitted_at')
-    
-    context = {
-        'group': group,
-        'sessions': sessions,
-        'last_session': last_session,
-        'results': results,
-    }
-    return render(request, 'groups/quiz_results.html', context)
-
-
-# ============ GURUH IMTIHON SOZLAMALARI ============
-@login_required
-@user_passes_test(is_admin_user)
-def group_exam_config(request, group_id):
-    """Guruh imtihon sozlamalarini boshqarish"""
-    group = get_object_or_404(Group, id=group_id)
-    config, created = GroupExamConfig.objects.get_or_create(group=group)
-    
-    group_categories = GroupCategory.objects.filter(group=group).select_related('category')
-    category_ids = [gc.category.id for gc in group_categories]
-    total_questions = QuizQuestion.objects.filter(category_id__in=category_ids).count()
-    
-    if request.method == 'POST':
-        try:
-            questions_per_student = int(request.POST.get('questions_per_student', 5))
-            random_order = request.POST.get('random_order') == 'on'
-            show_correct_answer = request.POST.get('show_correct_answer') == 'on'
-            time_limit = int(request.POST.get('time_limit', 0))
-            max_attempts = int(request.POST.get('max_attempts', 1))
-            
-            # Validatsiya
-            if questions_per_student <= 0:
-                messages.error(request, 'Savollar soni 0 dan katta bo\'lishi kerak!')
-                return redirect('group_exam_config', group_id=group.id)
-            
-            if max_attempts <= 0:
-                messages.error(request, 'Urinishlar soni 0 dan katta bo\'lishi kerak!')
-                return redirect('group_exam_config', group_id=group.id)
-            
-            if questions_per_student > total_questions and total_questions > 0:
-                messages.warning(
-                    request, 
-                    f'Diqqat! Mavjud {total_questions} ta savol, siz {questions_per_student} ta so\'rayapsiz! '
-                    f'Maksimal {total_questions} ta o\'rnatildi.'
-                )
-                questions_per_student = total_questions
-            
-            config.questions_per_student = questions_per_student
-            config.random_order = random_order
-            config.show_correct_answer = show_correct_answer
-            config.time_limit = time_limit
-            config.max_attempts = max_attempts
-            config.save()
-            
-            messages.success(
-                request, 
-                f'✅ Sozlamalar saqlandi! Har bir talaba {questions_per_student} ta savol oladi, '
-                f'maksimal {max_attempts} marta topshirishi mumkin.'
-            )
-            return redirect('group_exam_config', group_id=group.id)
-        except ValueError:
-            messages.error(request, 'Noto\'g\'ri raqam kiritildi!')
-        except Exception as e:
-            messages.error(request, f'Xatolik: {str(e)}')
-    
-    context = {
-        'group': group,
-        'config': config,
-        'total_questions': total_questions,
-        'group_categories': group_categories,
-    }
-    return render(request, 'groups/group_exam_config.html', context)
-
-
-@login_required
-@user_passes_test(is_admin_user)
-def group_questions_preview(request, group_id):
-    """Guruh savollarini ko'rish"""
-    group = get_object_or_404(Group, id=group_id)
-    config, created = GroupExamConfig.objects.get_or_create(group=group)
-    
-    group_categories = GroupCategory.objects.filter(group=group).values_list('category_id', flat=True)
-    all_questions = list(QuizQuestion.objects.filter(category_id__in=group_categories))
-    
-    question_count = min(config.questions_per_student, len(all_questions))
-    random_questions = random.sample(all_questions, question_count) if question_count > 0 else []
-    
-    context = {
-        'group': group,
-        'config': config,
-        'random_questions': random_questions,
-        'total_available': len(all_questions),
-    }
-    return render(request, 'groups/group_questions_preview.html', context)
-
-
-# ============ KATEGORIYALAR BOSHQARUVI ============
-@login_required
-@user_passes_test(is_admin_user)
-def category_list(request):
-    """Kategoriyalar ro'yxati"""
-    categories = Category.objects.all().annotate(
-        questions_count=Count('quiz_questions'),
-        groups_count=Count('group_categories')
-    )
-    
-    context = {
-        'categories': categories,
-        'total_categories': categories.count(),
-    }
-    return render(request, 'groups/category_list.html', context)
-
-
-@login_required
-@user_passes_test(is_admin_user)
-def category_add(request):
-    """Yangi kategoriya qo'shish"""
-    if request.method == 'POST':
-        name = request.POST.get('name', '').strip()
-        description = request.POST.get('description', '').strip()
-        
-        if not name:
-            messages.error(request, 'Kategoriya nomi kiritilishi shart!')
-        elif Category.objects.filter(name__iexact=name).exists():
-            messages.error(request, f'"{name}" nomli kategoriya allaqachon mavjud!')
-        else:
-            Category.objects.create(name=name, description=description)
-            messages.success(request, f'✅ "{name}" kategoriyasi qo\'shildi!')
-            return redirect('category_list')
-    
-    return render(request, 'groups/category_form.html', {'title': 'Kategoriya qo\'shish'})
-
-
-@login_required
-@user_passes_test(is_admin_user)
-def category_edit(request, pk):
-    """Kategoriyani tahrirlash"""
-    category = get_object_or_404(Category, pk=pk)
-    
-    if request.method == 'POST':
-        name = request.POST.get('name', '').strip()
-        description = request.POST.get('description', '').strip()
-        
-        if not name:
-            messages.error(request, 'Kategoriya nomi kiritilishi shart!')
-        elif Category.objects.filter(name__iexact=name).exclude(pk=pk).exists():
-            messages.error(request, f'"{name}" nomli kategoriya allaqachon mavjud!')
-        else:
-            category.name = name
-            category.description = description
-            category.save()
-            messages.success(request, f'✅ "{name}" kategoriyasi yangilandi!')
-            return redirect('category_list')
-    
-    context = {'category': category, 'title': 'Kategoriyani tahrirlash'}
-    return render(request, 'groups/category_form.html', context)
-
-
-@login_required
-@user_passes_test(is_admin_user)
-def category_delete(request, pk):
-    """Kategoriyani o'chirish"""
-    category = get_object_or_404(Category, pk=pk)
-    
-    if request.method == 'POST':
-        questions_count = category.quiz_questions.count()
-        category_name = category.name
-        category.delete()
-        
-        if questions_count > 0:
-            messages.warning(
-                request, 
-                f'🗑️ "{category_name}" kategoriyasi va unga tegishli {questions_count} ta savol o\'chirildi!'
-            )
-        else:
-            messages.success(request, f'🗑️ "{category_name}" kategoriyasi o\'chirildi!')
-        return redirect('category_list')
-    
-    context = {'category': category}
-    return render(request, 'groups/category_confirm_delete.html', context)
-
-
-# ============ GURUHGA KATEGORIYA BIRIKTIRISH ============
-@login_required
-@user_passes_test(is_admin_user)
-def group_categories_manage(request, group_id):
-    """Guruh kategoriyalarini boshqarish"""
-    group = get_object_or_404(Group, id=group_id)
-    assigned_categories = GroupCategory.objects.filter(group=group).select_related('category')
-    assigned_ids = [gc.category.id for gc in assigned_categories]
-    available_categories = Category.objects.exclude(id__in=assigned_ids)
-    
-    context = {
-        'group': group,
-        'assigned_categories': assigned_categories,
-        'available_categories': available_categories,
-    }
-    return render(request, 'groups/group_categories_manage.html', context)
-
-
-@login_required
-@user_passes_test(is_admin_user)
-def group_category_add(request, group_id):
-    """Guruhga kategoriya qo'shish"""
-    if request.method != 'POST':
-        messages.error(request, 'Faqat POST so\'rov qabul qilinadi!')
-        return redirect('group_categories_manage', group_id=group_id)
-    
-    try:
-        group = get_object_or_404(Group, id=group_id)
-        category_id = request.POST.get('category_id')
-        
-        if not category_id:
-            messages.error(request, 'Kategoriya tanlanmagan!')
-            return redirect('group_categories_manage', group_id=group_id)
-        
-        category = get_object_or_404(Category, id=category_id)
-        
-        if not GroupCategory.objects.filter(group=group, category=category).exists():
-            GroupCategory.objects.create(group=group, category=category)
-            messages.success(request, f'✅ "{category.name}" kategoriyasi qo\'shildi!')
-        else:
-            messages.warning(request, f'"{category.name}" allaqachon mavjud!')
-    except Exception as e:
-        messages.error(request, f'Xatolik: {str(e)}')
-    
-    return redirect('group_categories_manage', group_id=group_id)
-
-
-@login_required
-@user_passes_test(is_admin_user)
-def group_category_remove(request, group_category_id):
-    """Guruhdan kategoriyani olib tashlash"""
-    if request.method != 'POST':
-        messages.error(request, 'Faqat POST so\'rov qabul qilinadi!')
-        return redirect('admin_panel')
-    
-    try:
-        group_category = get_object_or_404(GroupCategory, id=group_category_id)
-        group = group_category.group
-        category_name = group_category.category.name
-        
-        group_category.delete()
-        messages.success(request, f'🗑️ "{category_name}" kategoriyasi olib tashlandi!')
-    except Exception as e:
-        messages.error(request, f'Xatolik: {str(e)}')
-        return redirect('admin_panel')
-    
-    return redirect('group_categories_manage', group_id=group.id)
-
-
-# ============ KATEGORIYA BO'YICHA SAVOLLAR ============
-@login_required
-@user_passes_test(is_admin_user)
-def category_questions_list(request, category_id):
-    """Kategoriya savollari ro'yxati"""
-    category = get_object_or_404(Category, id=category_id)
-    questions = QuizQuestion.objects.filter(category=category).order_by('id')
-    groups_using = Group.objects.filter(group_categories__category=category).distinct()
-    
-    context = {
-        'category': category,
-        'questions': questions,
-        'total_questions': questions.count(),
-        'groups_using': groups_using,
-    }
-    return render(request, 'groups/category_questions_list.html', context)
-
-
-@login_required
-@user_passes_test(is_admin_user)
-def category_question_add(request, category_id):
-    """Kategoriyaga yangi savol qo'shish"""
-    category = get_object_or_404(Category, id=category_id)
-    
-    if request.method == 'POST':
-        question_text = request.POST.get('question_text', '').strip()
-        correct_answer = request.POST.get('correct_answer', '').strip().lower()
-        
-        if not question_text or not correct_answer:
-            messages.error(request, 'Savol matni va to\'g\'ri javob kiritilishi shart!')
-        else:
-            QuizQuestion.objects.create(
-                category=category,
-                question_text=question_text,
-                correct_answer=correct_answer
-            )
-            messages.success(request, f'✅ "{category.name}" kategoriyasiga yangi savol qo\'shildi!')
-            return redirect('category_questions_list', category_id=category.id)
-    
-    context = {
-        'category': category,
-        'is_edit': False,
-    }
-    return render(request, 'groups/category_question_form.html', context)
-
-
-@login_required
-@user_passes_test(is_admin_user)
-def category_question_edit(request, question_id):
-    """Savolni tahrirlash"""
-    question = get_object_or_404(QuizQuestion, id=question_id)
-    category = question.category
-    
-    if request.method == 'POST':
-        question_text = request.POST.get('question_text', '').strip()
-        correct_answer = request.POST.get('correct_answer', '').strip().lower()
-        
-        if not question_text or not correct_answer:
-            messages.error(request, 'Savol matni va to\'g\'ri javob kiritilishi shart!')
-        else:
-            question.question_text = question_text
-            question.correct_answer = correct_answer
-            question.save()
-            messages.success(request, '✅ Savol tahrirlandi!')
-            return redirect('category_questions_list', category_id=category.id)
-    
-    context = {
-        'question': question,
-        'category': category,
-        'is_edit': True,
-    }
-    return render(request, 'groups/category_question_form.html', context)
-
-
-@login_required
-@user_passes_test(is_admin_user)
-def category_question_delete(request, question_id):
-    """Savolni o'chirish"""
-    question = get_object_or_404(QuizQuestion, id=question_id)
-    category = question.category
-    
-    if request.method == 'POST':
-        question.delete()
-        messages.success(request, f'🗑️ Savol o\'chirildi!')
-        return redirect('category_questions_list', category_id=category.id)
-    
-    context = {
-        'question': question,
-        'category': category,
-    }
-    return render(request, 'groups/category_question_confirm_delete.html', context)
-
-
-# ============ IMTIHON BOSHQARUV ============
-@login_required
-def exam_control(request, group_id):
-    """Imtihon boshqaruv paneli"""
-    if not is_admin_user(request.user):
-        messages.error(request, 'Sizda bu sahifani ko\'rish huquqi yo\'q!')
-        return redirect('home')
-    
-    group = get_object_or_404(Group, id=group_id)
-    exam_control, created = ExamControl.objects.get_or_create(group=group)
-    students = group.students.all().select_related('user')
-    config, _ = GroupExamConfig.objects.get_or_create(group=group)
-    
-    group_categories = GroupCategory.objects.filter(group=group).values_list('category_id', flat=True)
-    questions_count = QuizQuestion.objects.filter(category_id__in=group_categories).count()
-    
-    context = {
-        'group': group,
-        'exam_control': exam_control,
-        'students': students,
-        'questions_count': questions_count,
-        'config': config,
-    }
-    return render(request, 'groups/exam_control.html', context)
-
-
-# ============ QONUN VA QOIDALAR ============
-@login_required
-@user_passes_test(is_admin_user)
-def rules_edit(request):
-    """Qonun va qoidalarni tahrirlash"""
-    rules, created = Rules.objects.get_or_create(id=1)
-    
-    if request.method == 'POST':
-        try:
-            video_url = request.POST.get('video_url', '')
-            rules.video_url = video_url
-            
-            if request.FILES.get('video_file'):
-                rules.video_file = request.FILES['video_file']
-            
-            if request.FILES.get('image1'):
-                rules.image1 = request.FILES['image1']
-            rules.image1_title = request.POST.get('image1_title', 'Imtihon tartibi')
-            rules.image1_description = request.POST.get('image1_description', '')
-            
-            if request.FILES.get('image2'):
-                rules.image2 = request.FILES['image2']
-            rules.image2_title = request.POST.get('image2_title', 'Baholash mezonlari')
-            rules.image2_description = request.POST.get('image2_description', '')
-            
-            rules.rules_text = request.POST.get('rules_text', '')
-            rules.save()
-            messages.success(request, '✅ Qonun va qoidalar saqlandi!')
-            return redirect('rules_edit')
-        except Exception as e:
-            messages.error(request, f'Xatolik: {str(e)}')
-    
-    context = {
-        'rules': rules,
-    }
-    return render(request, 'groups/rules_edit.html', context)
-
-
-# ============ API FUNKSIYALARI ============
 @login_required
 @user_passes_test(is_superuser)
 def admin_detail_api(request, admin_id):
-    """Admin ma'lumotlarini olish (API)"""
     try:
         admin = User.objects.get(id=admin_id)
-        data = {
+        return JsonResponse({
             'success': True,
             'admin': {
                 'id': admin.id,
@@ -1513,8 +645,7 @@ def admin_detail_api(request, admin_id):
                 'email': admin.email,
                 'is_superuser': admin.is_superuser,
             }
-        }
-        return JsonResponse(data)
+        })
     except User.DoesNotExist:
         return JsonResponse({'success': False, 'message': 'Admin topilmadi!'})
     except Exception as e:
@@ -1524,10 +655,8 @@ def admin_detail_api(request, admin_id):
 @login_required
 @user_passes_test(is_superuser)
 def admin_update(request):
-    """Admin ma'lumotlarini yangilash (API)"""
     if request.method != 'POST':
         return JsonResponse({'success': False, 'message': 'Faqat POST so\'rov qabul qilinadi!'})
-    
     try:
         admin_id = request.POST.get('admin_id')
         first_name = request.POST.get('first_name', '').strip()
@@ -1536,166 +665,989 @@ def admin_update(request):
         email = request.POST.get('email', '').strip()
         password = request.POST.get('password', '')
         is_superuser_val = request.POST.get('is_superuser') == 'on'
-        
+
         if not username:
             return JsonResponse({'success': False, 'message': 'Username kiritilishi shart!'})
-        
+
         admin = User.objects.get(id=admin_id)
-        
-        # O'zini superuserlikdan chiqara olmaslik
         if admin.id == request.user.id and not is_superuser_val:
             return JsonResponse({'success': False, 'message': 'O\'zingizni superuserlikdan chiqara olmaysiz!'})
-        
-        # Username unikalligi tekshiruvi
         if User.objects.filter(username=username).exclude(id=admin_id).exists():
             return JsonResponse({'success': False, 'message': f'"{username}" username allaqachon mavjud!'})
-        
+
         with transaction.atomic():
             admin.first_name = first_name
             admin.last_name = last_name
             admin.username = username
             admin.email = email
-            
             if password and len(password) >= 4:
                 admin.set_password(password)
-                admin_pass, created = AdminPassword.objects.get_or_create(user=admin)
+                admin_pass, _ = AdminPassword.objects.get_or_create(user=admin)
                 admin_pass.plain_password = password
                 admin_pass.save()
-            
             if request.user.is_superuser:
                 admin.is_superuser = is_superuser_val
                 admin.is_staff = True
-            
             admin.save()
-        
         return JsonResponse({'success': True, 'message': 'Admin ma\'lumotlari yangilandi!'})
-        
     except User.DoesNotExist:
         return JsonResponse({'success': False, 'message': 'Admin topilmadi!'})
     except Exception as e:
         return JsonResponse({'success': False, 'message': f'Xatolik: {str(e)}'})
 
+
+
+
+import json
+import random
+from collections import defaultdict
+from django.shortcuts import render, get_object_or_404, redirect
+from django.contrib.auth.decorators import login_required
 from django.contrib import messages
-from django.shortcuts import redirect, get_object_or_404
-from django.contrib.auth.models import User
-from .models import Student
-from django.contrib.auth.decorators import login_required, user_passes_test
+from django.http import JsonResponse
+from django.views.decorators.csrf import csrf_exempt
+from django.utils import timezone
+from django.core.cache import cache
+from .models import (
+    Group, Student, QuizSession, UserExamAttempt, QuizQuestion, QuizResult,
+    GroupExamConfig, GroupCategory, CategoryGroupConfig, ExamControl,
+    Category, ReadingText
+)
+
 
 @login_required
-@user_passes_test(lambda u: u.is_staff or u.groups.filter(name='admin').exists())
-def student_bulk_delete(request):
-    """Bulk delete students"""
-    if request.method == 'POST':
-        student_ids = request.POST.getlist('student_ids')
-        
-        if not student_ids:
-            messages.warning(request, "Hech qanday foydalanuvchi tanlanmagan!")
-            return redirect('student_list')
-        
-        # Get students to delete
-        students = Student.objects.filter(pk__in=student_ids)
-        student_count = students.count()
-        
-        # Store user objects to delete user accounts too (optional)
-        users_to_delete = [student.user for student in students]
-        
-        # Delete students first
-        students.delete()
-        
-        # Optionally delete the associated user accounts
-        for user in users_to_delete:
-            user.delete()
-        
-        messages.success(request, f"{student_count} ta foydalanuvchi muvaffaqiyatli o'chirildi!")
-        
-    return redirect('student_list')
+def quiz_take(request, group_id):
+    try:
+        student = Student.objects.get(user=request.user)
+    except Student.DoesNotExist:
+        return redirect('student_panel')
 
+    group = get_object_or_404(Group, id=group_id)
 
-from django.views.decorators.csrf import csrf_exempt
-from django.views.decorators.http import require_http_methods
-from django.contrib.auth.decorators import login_required
-from django.http import JsonResponse
-import json
+    if student.group_id != group.id:
+        return redirect('student_panel')
+
+    # Exam active check
+    is_exam_active = False
+    try:
+        exam_control = ExamControl.objects.get(group=group)
+        is_exam_active = exam_control.is_active
+    except ExamControl.DoesNotExist:
+        pass
+
+    if not is_exam_active:
+        cache_key = f'exam_active_{group_id}'
+        is_exam_active = cache.get(cache_key, False)
+
+    if not is_exam_active:
+        return render(request, 'groups/quiz_take.html', {
+            'group': group,
+            'student': student,
+            'is_exam_active': False,
+            'config': GroupExamConfig.objects.filter(group=group).first(),
+        })
+
+    # Quiz session
+    quiz_session = QuizSession.objects.filter(group=group, is_active=True).first()
+    if not quiz_session:
+        quiz_session = QuizSession.objects.create(
+            group=group, is_active=True, started_at=timezone.now(), created_by=request.user
+        )
+
+    config, _ = GroupExamConfig.objects.get_or_create(group=group)
+    max_attempts = config.max_attempts
+
+    # Check completed attempts
+    completed_attempts = UserExamAttempt.objects.filter(
+        student=student, exam_session=quiz_session, is_completed=True
+    ).count()
+
+    if completed_attempts >= max_attempts:
+        return render(request, 'groups/quiz_take.html', {
+            'group': group, 'student': student, 'is_exam_active': True,
+            'has_completed': True, 'already_submitted': True,
+            'max_attempts': max_attempts, 'attempts_used': completed_attempts,
+            'attempts_left': 0, 'config': config,
+        })
+
+    # Get or create attempt
+    attempt = UserExamAttempt.objects.filter(
+        student=student, exam_session=quiz_session, is_completed=False
+    ).first()
+
+    # Load questions
+    if attempt and attempt.selected_questions:
+        questions = list(QuizQuestion.objects.filter(id__in=attempt.selected_questions).select_related('category'))
+        user_answers = attempt.user_answers or {}
+    else:
+        questions_list = []
+        group_categories = GroupCategory.objects.filter(group=group, is_active=True).select_related('category')
+        
+        for gc in group_categories:
+            category = gc.category
+            try:
+                cat_config = CategoryGroupConfig.objects.get(category=category, group=group, is_active=True)
+                questions_per_category = cat_config.questions_count
+            except CategoryGroupConfig.DoesNotExist:
+                questions_per_category = 3
+            
+            all_cat_questions = list(QuizQuestion.objects.filter(category=category))
+            total_available = len(all_cat_questions)
+            
+            if total_available > 0:
+                take_count = min(questions_per_category, total_available)
+                selected = random.sample(all_cat_questions, take_count)
+                questions_list.extend(selected)
+        
+        if not questions_list:
+            first_cat = group_categories.first()
+            if first_cat:
+                fallback = list(QuizQuestion.objects.filter(category=first_cat.category))
+                if fallback:
+                    questions_list = random.sample(fallback, min(3, len(fallback)))
+        
+        questions = questions_list
+        if config.random_order:
+            random.shuffle(questions)
+        
+        user_answers = {}
+        attempt = UserExamAttempt.objects.create(
+            student=student, exam_session=quiz_session,
+            selected_questions=[q.id for q in questions], user_answers={},
+            attempt_number=completed_attempts + 1, is_completed=False
+        )
+
+    TOTAL_QUESTIONS = len(questions)
+
+    # Reading comprehension data
+    for question in questions:
+        if question.question_type == 'reading_comprehension' and question.reading_text:
+            reading_questions = question.reading_text.reading_questions.all().order_by('order')
+            sub_answers = {}
+            for sq in reading_questions:
+                sub_answers[str(sq.id)] = user_answers.get(f'q_{sq.id}', '')
+            
+            question.reading_data = {
+                'title': question.reading_text.title,
+                'content': question.reading_text.content,
+                'sub_answers': sub_answers,
+                'sub_questions': [
+                    {
+                        'id': q.id,
+                        'text': q.question_text,
+                        'correct_answer': q.correct_answer,
+                        'user_answer': user_answers.get(f'q_{q.id}', '')
+                    }
+                    for q in reading_questions
+                ]
+            }
+
+    # Category grouping va Word Bank
+    category_dict = defaultdict(list)
+    for question in questions:
+        category_dict[question.category].append(question)
+
+    category_list = []
+    for category, cat_questions in category_dict.items():
+        has_fill_blank = any(q.question_type == 'fill_blank' for q in cat_questions)
+        
+        cat_fill_blank_words = []
+        seen = set()
+        
+        if has_fill_blank:
+            for q in cat_questions:
+                if q.question_type == 'fill_blank':
+                    options = q.get_options_list()
+                    for opt in options:
+                        if opt and opt.strip() not in seen:
+                            seen.add(opt.strip())
+                            cat_fill_blank_words.append(opt.strip())
+        
+        # Agar so'zlar bo'lmasa, correct_answer dan olish
+        if has_fill_blank and not cat_fill_blank_words:
+            for q in cat_questions:
+                if q.question_type == 'fill_blank' and q.correct_answer:
+                    if '|' in q.correct_answer:
+                        parts = [p.strip() for p in q.correct_answer.split('|') if p.strip()]
+                        for p in parts:
+                            if p not in seen:
+                                seen.add(p)
+                                cat_fill_blank_words.append(p)
+                    else:
+                        if q.correct_answer.strip() not in seen:
+                            seen.add(q.correct_answer.strip())
+                            cat_fill_blank_words.append(q.correct_answer.strip())
+        
+        category_list.append({
+            'grouper': category,
+            'list': cat_questions,
+            'has_fill_blank': has_fill_blank,
+            'fill_blank_words': cat_fill_blank_words
+        })
+
+    # Global fill_blank_words
+    fill_blank_words = []
+    seen_words = set()
+    for q in questions:
+        if q.question_type == 'fill_blank':
+            for opt in q.get_options_list():
+                if opt and opt.strip() not in seen_words:
+                    seen_words.add(opt.strip())
+                    fill_blank_words.append(opt.strip())
+
+    return render(request, 'groups/quiz_take.html', {
+        'group': group,
+        'student': student,
+        'is_exam_active': True,
+        'has_completed': False,
+        'already_submitted': False,
+        'questions': questions,
+        'category_list': category_list,
+        'user_answers': user_answers,
+        'total_questions': TOTAL_QUESTIONS,
+        'fill_blank_words': fill_blank_words,
+        'attempt_number': attempt.attempt_number,
+        'max_attempts': max_attempts,
+        'attempts_used': completed_attempts,
+        'attempts_left': max_attempts - completed_attempts,
+        'config': config,
+        'attempt': attempt,
+    })
+
 
 @login_required
 @csrf_exempt
-@require_http_methods(["GET", "POST"])
-def check_exam_api(request):
-    """Check if student has an active exam session"""
+def quiz_submit(request):
+    """Test javoblarini qabul qilish va baholash"""
+    if request.method != 'POST':
+        return JsonResponse({'success': False, 'message': 'Faqat POST so\'rov!'})
+
     try:
-        student = request.user.student if hasattr(request.user, 'student') else None
+        # JSON ma'lumotlarni o'qish
+        try:
+            data = json.loads(request.body)
+        except:
+            data = request.POST.dict()
         
-        if not student:
+        group_id = data.get('group_id')
+        answers = data.get('answers', {})
+        
+        if isinstance(answers, str):
+            try:
+                answers = json.loads(answers)
+            except:
+                answers = {}
+        
+        student = Student.objects.get(user=request.user)
+        group = Group.objects.get(id=group_id)
+
+        # Guruhdagi barcha savollarni olish
+        group_categories = GroupCategory.objects.filter(group=group, is_active=True)
+        all_questions = []
+        for gc in group_categories:
+            questions = list(QuizQuestion.objects.filter(category=gc.category))
+            all_questions.extend(questions)
+        
+        config, _ = GroupExamConfig.objects.get_or_create(group=group)
+        
+        # Sessiyani olish
+        quiz_session = QuizSession.objects.filter(group=group, is_active=True).first()
+        if not quiz_session:
+            quiz_session = QuizSession.objects.create(
+                group=group, 
+                is_active=False, 
+                started_at=timezone.now(), 
+                created_by=request.user
+            )
+        
+        # MUHIM: Avval tugallangan attempt bor yoki yo'qligini tekshirish
+        existing_completed = UserExamAttempt.objects.filter(
+            student=student, 
+            exam_session=quiz_session,
+            is_completed=True
+        ).exists()
+        
+        if existing_completed:
+            # Agar student allaqachon topshirgan bo'lsa, qayta topshirishga ruxat bermaymiz
             return JsonResponse({
-                'success': False,
-                'error': 'Student profile not found'
-            }, status=400)
+                'success': False, 
+                'message': 'Siz allaqachon testni topshirgansiz! Qayta topshirish mumkin emas.',
+                'already_submitted': True
+            })
         
-        # Check for active exam session
-        # You'll need to create an ExamSession model for this
-        from .models import ExamSession
-        
-        active_session = ExamSession.objects.filter(
-            student=student,
-            status='in_progress',  # or 'active'
-            end_time__isnull=True
+        # Attemptni olish yoki yaratish
+        attempt = UserExamAttempt.objects.filter(
+            student=student, 
+            exam_session=quiz_session,
+            is_completed=False
         ).first()
         
-        if active_session:
-            return JsonResponse({
-                'success': True,
-                'has_active_exam': True,
-                'exam_id': active_session.id,
-                'start_time': active_session.start_time,
-                'remaining_time': active_session.get_remaining_time()  # Implement this method
-            })
+        if not attempt:
+            attempt = UserExamAttempt.objects.create(
+                student=student,
+                exam_session=quiz_session,
+                selected_questions=[q.id for q in all_questions],
+                user_answers=answers,
+                attempt_number=1,
+                is_completed=False
+            )
         else:
-            return JsonResponse({
-                'success': True,
-                'has_active_exam': False
-            })
+            attempt.user_answers = answers
+            attempt.save()
+        
+        # BALLARNI HISOBLASH
+        total_score = 0
+        total_possible = 0
+        question_results = {}
+        
+        if attempt.selected_questions:
+            student_questions = QuizQuestion.objects.filter(id__in=attempt.selected_questions)
+        else:
+            student_questions = all_questions
+        
+        for question in student_questions:
+            qid = str(question.id)
             
-    except Exception as e:
+            if question.question_type in ['fill_blank', 'fill_blank_no_word', 'true_false', 'multiple_choice', 'underline_correct']:
+                user_answer = answers.get(f'q_{question.id}', '')
+                if not user_answer:
+                    user_answer = answers.get(str(question.id), '')
+                
+                is_correct = False
+                if user_answer:
+                    user_clean = str(user_answer).strip().lower()
+                    correct_clean = str(question.correct_answer).strip().lower()
+                    
+                    if '|' in correct_clean:
+                        is_correct = user_clean in [v.strip().lower() for v in correct_clean.split('|')]
+                    else:
+                        is_correct = user_clean == correct_clean
+                
+                if is_correct:
+                    total_score += question.points
+                total_possible += question.points
+                
+                question_results[qid] = {
+                    'user_answer': user_answer if user_answer else 'Javob berilmagan',
+                    'is_correct': is_correct,
+                    'correct_answer': question.correct_answer
+                }
+            
+            elif question.question_type == 'complete_the_words':
+                correct_answers = question.get_complete_words_answers()
+                blanks_total = len(correct_answers)
+                blanks_correct = 0
+                blank_scores = {}
+                
+                user_answer_raw = answers.get(f'q_{question.id}', '')
+                if not user_answer_raw:
+                    user_answer_raw = answers.get(str(question.id), '')
+                
+                user_blank_answers = {}
+                if user_answer_raw:
+                    if isinstance(user_answer_raw, str):
+                        try:
+                            user_blank_answers = json.loads(user_answer_raw)
+                        except:
+                            user_blank_answers = {"1": user_answer_raw}
+                    elif isinstance(user_answer_raw, dict):
+                        user_blank_answers = user_answer_raw
+                
+                pts_per_blank = round(question.points / blanks_total, 2)
+                for blank_num, correct_val in correct_answers.items():
+                    user_val = user_blank_answers.get(str(blank_num), '')
+                    if not user_val:
+                        user_val = answers.get(f'q_{question.id}_blank_{blank_num}', '')
+                    
+                    is_correct = False
+                    if user_val:
+                        user_clean = str(user_val).strip().lower()
+                        correct_clean = str(correct_val).strip().lower()
+                        if '|' in correct_clean:
+                            is_correct = user_clean in [v.strip().lower() for v in correct_clean.split('|')]
+                        else:
+                            is_correct = user_clean == correct_clean
+                    
+                    if is_correct:
+                        blanks_correct += 1
+                        total_score += pts_per_blank
+                    
+                    blank_scores[str(blank_num)] = {
+                        'user_answer': user_val if user_val else 'Javob berilmagan',
+                        'is_correct': is_correct,
+                        'correct_answer': correct_val
+                    }
+                
+                total_possible += question.points
+                question_results[qid] = {
+                    'type': 'complete_the_words',
+                    'blanks_correct': blanks_correct,
+                    'blanks_total': blanks_total,
+                    'blanks': blank_scores
+                }
+            
+            elif question.question_type == 'sentence_arrangement':
+                user_answer = answers.get(f'q_{question.id}', '')
+                correct_sentence = question.correct_sentence or ''
+                
+                is_correct = False
+                if user_answer and correct_sentence:
+                    user_clean = ' '.join(str(user_answer).split()).strip().lower()
+                    correct_clean = ' '.join(correct_sentence.split()).strip().lower()
+                    is_correct = user_clean == correct_clean
+                    print(f"SA Check - User: '{user_clean}', Correct: '{correct_clean}', Match: {is_correct}")
+                
+                if is_correct:
+                    total_score += question.points
+                total_possible += question.points
+                
+                question_results[str(question.id)] = {
+                    'user_answer': user_answer if user_answer else 'Javob berilmagan',
+                    'is_correct': is_correct,
+                    'correct_answer': correct_sentence
+                }
+            elif question.question_type == 'matching':
+                correct_answers = question.get_matching_correct_answers()
+                blanks_total = len(correct_answers)
+                blanks_correct = 0
+                blank_scores = {}
+                
+                pts_per_blank = round(question.points / blanks_total, 2)
+                for key, correct_val in correct_answers.items():
+                    user_val = answers.get(f'q_{question.id}_{key}', '')
+                    if not user_val:
+                        user_val = answers.get(f'q_{question.id}', {}).get(str(key), '')
+                    
+                    is_correct = str(user_val).strip().lower() == str(correct_val).strip().lower()
+                    if is_correct:
+                        blanks_correct += 1
+                        total_score += pts_per_blank
+                    
+                    blank_scores[key] = {
+                        'user_answer': user_val if user_val else 'Javob berilmagan',
+                        'is_correct': is_correct,
+                        'correct_answer': correct_val
+                    }
+                
+                total_possible += question.points
+                question_results[qid] = {
+                    'type': 'matching',
+                    'blanks_correct': blanks_correct,
+                    'blanks_total': blanks_total,
+                    'blanks': blank_scores
+                }
+            
+            elif question.question_type == 'cloze_multiple_blanks':
+                correct_answers = question.get_cloze_correct_answers()
+                blanks_total = len(correct_answers)
+                blanks_correct = 0
+                blank_scores = {}
+                
+                user_answers_for_q = answers.get(f'q_{question.id}', {})
+                if not isinstance(user_answers_for_q, dict):
+                    user_answers_for_q = {}
+                
+                pts_per_blank = round(question.points / blanks_total, 2)
+                for blank_num, correct_val in correct_answers.items():
+                    user_val = user_answers_for_q.get(str(blank_num), '')
+                    if not user_val:
+                        user_val = answers.get(f'q_{question.id}_blank_{blank_num}', '')
+                    
+                    is_correct = False
+                    if user_val:
+                        user_clean = str(user_val).strip().lower()
+                        correct_clean = str(correct_val).strip().lower()
+                        if '|' in correct_clean:
+                            is_correct = user_clean in [v.strip().lower() for v in correct_clean.split('|')]
+                        else:
+                            is_correct = user_clean == correct_clean
+                    
+                    if is_correct:
+                        blanks_correct += 1
+                        total_score += pts_per_blank
+                    
+                    blank_scores[str(blank_num)] = {
+                        'user_answer': user_val if user_val else 'Javob berilmagan',
+                        'is_correct': is_correct,
+                        'correct_answer': correct_val
+                    }
+                
+                total_possible += question.points
+                question_results[qid] = {
+                    'type': 'cloze_multiple_blanks',
+                    'blanks_correct': blanks_correct,
+                    'blanks_total': blanks_total,
+                    'blanks': blank_scores
+                }
+            
+            elif question.question_type == 'reading_comprehension' and question.reading_text:
+                sub_questions = question.reading_text.reading_questions.all()
+                blanks_total = sub_questions.count()
+                blanks_correct = 0
+                blank_scores = {}
+                
+                pts_per_blank = round(question.points / blanks_total, 2)
+                for sq in sub_questions:
+                    user_val = answers.get(f'q_{sq.id}', '')
+                    is_correct = False
+                    if user_val:
+                        user_clean = str(user_val).strip().lower()
+                        if '|' in sq.correct_answer:
+                            is_correct = user_clean in [v.strip().lower() for v in sq.correct_answer.split('|')]
+                        else:
+                            is_correct = user_clean == sq.correct_answer.strip().lower()
+                    
+                    if is_correct:
+                        blanks_correct += 1
+                        total_score += pts_per_blank
+                    
+                    blank_scores[str(sq.id)] = {
+                        'user_answer': user_val if user_val else 'Javob berilmagan',
+                        'is_correct': is_correct,
+                        'correct_answer': sq.correct_answer
+                    }
+                
+                total_possible += question.points
+                question_results[qid] = {
+                    'type': 'reading_comprehension',
+                    'blanks_correct': blanks_correct,
+                    'blanks_total': blanks_total,
+                    'blanks': blank_scores
+                }
+
+            elif question.question_type == 'writing':
+                user_answer = answers.get(f'q_{question.id}', '') or ''
+                total_possible += question.points
+                question_results[qid] = {
+                    'type': 'writing',
+                    'user_answer': user_answer,
+                    'is_correct': None,
+                    'graded': False,
+                    'earned_points': 0,
+                    'max_points': question.points
+                }
+
+        final_score = 0
+        if total_possible > 0:
+            final_score = round((total_score / total_possible) * 100, 1)
+        
+        # Attemptni tugallangan deb belgilash
+        attempt.is_completed = True
+        attempt.completed_at = timezone.now()
+        attempt.user_answers = answers
+        attempt.save()
+        
+        # MUHIM: QuizResult ni faqat bitta marta yaratish
+        # get_or_create ishlatamiz, shunda ikki marta yozilmaydi
+        result, created = QuizResult.objects.get_or_create(
+            student=student, 
+            quiz_session=quiz_session,
+            attempt_number=attempt.attempt_number,
+            defaults={
+                'score': final_score,
+                'total_questions': total_possible,
+                'answers': question_results
+            }
+        )
+        
+        if not created:
+            # Agar mavjud bo'lsa, yangilaymiz
+            result.score = final_score
+            result.total_questions = total_possible
+            result.answers = question_results
+            result.save()
+            print(f"Updated existing QuizResult with score: {final_score}")
+        else:
+            print(f"Created new QuizResult with score: {final_score}")
+
         return JsonResponse({
-            'success': False,
-            'error': str(e)
-        }, status=500)
+            'success': True,
+            'message': f'Ball: {final_score}/100',
+            'score': final_score,
+            'total': 100,
+            'raw_score': total_score,
+            'raw_total': total_possible,
+            'already_submitted': False
+        })
+
+    except Student.DoesNotExist:
+        return JsonResponse({'success': False, 'message': 'Student topilmadi!'})
+    except Group.DoesNotExist:
+        return JsonResponse({'success': False, 'message': 'Guruh topilmadi!'})
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        return JsonResponse({'success': False, 'message': str(e)})
+
+
+
+
+
+
+
+
+
+
+
+
+@login_required
+@csrf_exempt
+def save_answer_api(request):
+    if request.method != 'POST':
+        return JsonResponse({'success': False, 'message': 'Faqat POST so\'rov'})
+
+    try:
+        data = json.loads(request.body)
+        student = Student.objects.get(user=request.user)
+        group_id = data.get('group_id')
+        question_id = data.get('question_id')
+        answer = data.get('answer', '')
+
+        quiz_session = QuizSession.objects.filter(group_id=group_id, is_active=True).first()
+        if not quiz_session:
+            return JsonResponse({'success': False, 'message': 'Sessiya topilmadi'})
+
+        attempt = UserExamAttempt.objects.filter(
+            student=student, exam_session=quiz_session, is_completed=False
+        ).first()
+
+        if not attempt:
+            group = Group.objects.get(id=group_id)
+            attempt = UserExamAttempt.objects.create(
+                student=student,
+                exam_session=quiz_session,
+                selected_questions=[],
+                user_answers={},
+                attempt_number=1
+            )
+
+        if not attempt.user_answers:
+            attempt.user_answers = {}
+
+        attempt.user_answers[f'q_{question_id}'] = answer
+        attempt.save()
+
+        return JsonResponse({'success': True})
+
+    except Exception as e:
+        return JsonResponse({'success': False, 'message': str(e)})
+
+
+@login_required
+def get_saved_answers_api(request, group_id):
+    try:
+        student = Student.objects.get(user=request.user)
+        quiz_session = QuizSession.objects.filter(group_id=group_id, is_active=True).first()
+        if quiz_session:
+            attempt = UserExamAttempt.objects.filter(
+                student=student, exam_session=quiz_session, is_completed=False
+            ).first()
+            if attempt and attempt.user_answers:
+                return JsonResponse({'success': True, 'answers': attempt.user_answers})
+        return JsonResponse({'success': True, 'answers': {}})
+    except Exception as e:
+        return JsonResponse({'success': False, 'message': str(e)})
+
+
+@login_required
+def quiz_results(request, group_id):
+    if not is_admin_user(request.user):
+        messages.error(request, 'Sizda bu sahifani ko\'rish huquqi yo\'q!')
+        return redirect('home')
+
+    group = get_object_or_404(Group, id=group_id)
     
+    # MUHIM: Distinct bilan olish, har bir student uchun eng oxirgi natijani olish
+    from django.db.models import Max, Subquery, OuterRef
+    
+    # Har bir student uchun eng oxirgi natijani olish
+    latest_results = QuizResult.objects.filter(
+        quiz_session__group=group
+    ).values('student_id').annotate(
+        latest_id=Max('id')
+    ).values_list('latest_id', flat=True)
+    
+    all_results = QuizResult.objects.filter(
+        id__in=latest_results
+    ).select_related('student__user').order_by('-submitted_at')
+    
+    # Yoki alternativ: guruhlash
+    unique_results = {}
+    for result in all_results:
+        student_id = result.student.id
+        # Faqat eng oxirgi natijani saqlash
+        if student_id not in unique_results:
+            total_possible = result.total_questions or 0
+            score_pct = float(result.score)
+            raw_score = round((score_pct / 100) * total_possible, 1) if total_possible > 0 else 0
+            unique_results[student_id] = {
+                'student_id': student_id,
+                'student_name': result.student.full_name,
+                'username': result.student.user.username,
+                'last_score': score_pct,
+                'raw_score': raw_score,
+                'last_submitted': result.submitted_at,
+                'total_questions': total_possible,
+                'attempt_count': 1
+            }
+        else:
+            # Agar eski natija bo'lsa, yangisini olish
+            if result.submitted_at > unique_results[student_id]['last_submitted']:
+                total_possible = result.total_questions or 0
+                score_pct = float(result.score)
+                raw_score = round((score_pct / 100) * total_possible, 1) if total_possible > 0 else 0
+                unique_results[student_id]['last_score'] = score_pct
+                unique_results[student_id]['raw_score'] = raw_score
+                unique_results[student_id]['last_submitted'] = result.submitted_at
+                unique_results[student_id]['total_questions'] = total_possible
+            unique_results[student_id]['attempt_count'] += 1
+
+    unique_list = list(unique_results.values())
+    total_score = sum(r['last_score'] for r in unique_list) if unique_list else 0
+    avg_score = round(total_score / len(unique_list), 1) if unique_list else 0
+    max_score = max([r['last_score'] for r in unique_list]) if unique_list else 0
+
+    context = {
+        'group': group,
+        'unique_results': unique_list,
+        'total_results': QuizResult.objects.filter(quiz_session__group=group).count(),
+        'avg_score': avg_score,
+        'max_score': max_score,
+    }
+    return render(request, 'groups/quiz_results.html', context)
+
+@login_required
+@user_passes_test(is_admin_user)
+@csrf_exempt
+@require_http_methods(["POST"])
+def start_exam_api(request):
+    """Testni boshlash - barcha holatlarni tozalash"""
+    try:
+        data = json.loads(request.body)
+        group_id = data.get('group_id')
+        if not group_id:
+            return JsonResponse({'success': False, 'message': 'group_id kerak'})
+
+        group = Group.objects.get(id=group_id)
+        config, _ = GroupExamConfig.objects.get_or_create(group=group)
+        now = timezone.now()
+
+        exam_control, _ = ExamControl.objects.get_or_create(group=group)
+        
+        # BARCHA HOLATLARNI TOZALASH
+        exam_control.is_active = True
+        exam_control.is_paused = False
+        exam_control.started_at = now
+        exam_control.paused_at = None
+        exam_control.elapsed_time = 0  # O'tgan vaqtni 0 ga tozalash
+        exam_control.save()
+
+        # Cache ni tozalash
+        cache.set(f'exam_active_{group_id}', True, timeout=86400)
+        cache.delete(f'exam_paused_{group_id}')
+        cache.set(f'exam_start_time_{group_id}', now.isoformat(), timeout=86400)
+        cache.delete(f'exam_elapsed_time_{group_id}')
+
+        end_time = None
+        end_time_str = "Cheksiz"
+        if config.time_limit > 0:
+            end_time = now + timezone.timedelta(minutes=config.time_limit)
+            cache.set(f'exam_end_time_{group_id}', end_time.isoformat(), timeout=86400)
+            end_time_str = end_time.strftime('%H:%M:%S')
+
+        # Eski sessiyalarni yopish
+        QuizSession.objects.filter(group=group, is_active=True).update(is_active=False)
+        ExamSession.objects.filter(group=group, is_active=True).update(is_active=False)
+
+        quiz_session = QuizSession.objects.create(
+            group=group, is_active=True, started_at=now, created_by=request.user
+        )
+
+        return JsonResponse({
+            'success': True,
+            'message': f'Test boshlandi! Tugash: {end_time_str}',
+            'is_active': True,
+            'is_paused': False,
+            'elapsed_time': 0,
+            'started_at': now.isoformat(),
+            'end_time': end_time.isoformat() if end_time else None
+        })
+
+    except Exception as e:
+        return JsonResponse({'success': False, 'message': str(e)})
 
 
 
 
 
-from django.http import JsonResponse
-from django.views.decorators.csrf import csrf_exempt
-from django.views.decorators.http import require_http_methods
-from django.contrib.auth.decorators import login_required, user_passes_test
-from .models import Group, ExamSession  # Model nomlarini tekshiring
 
 
-from django.http import JsonResponse
-from django.views.decorators.csrf import csrf_exempt
-from django.views.decorators.http import require_http_methods
-from django.contrib.auth.decorators import login_required
-import json
-import logging
 
-logger = logging.getLogger(__name__)
-from django.http import JsonResponse
-from django.views.decorators.csrf import csrf_exempt
-from django.views.decorators.http import require_http_methods
-from django.contrib.auth.decorators import login_required
-from .models import Group
-import json
-from django.core.cache import cache
-from django.http import JsonResponse
-from django.views.decorators.csrf import csrf_exempt
-from django.views.decorators.http import require_http_methods
-from django.contrib.auth.decorators import login_required
-from .models import Group, ExamSession
-import json
-from datetime import datetime
 
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+def _calculate_score_for_attempt(attempt, group):
+    if attempt.selected_questions:
+        questions = list(QuizQuestion.objects.filter(id__in=attempt.selected_questions))
+    else:
+        group_categories = GroupCategory.objects.filter(group=group, is_active=True)
+        questions = list(QuizQuestion.objects.filter(
+            category__in=group_categories.values('category')
+        ))
+
+    user_answers = attempt.user_answers or {}
+    total_score = 0
+    total_possible = 0
+    question_results = {}
+
+    for question in questions:
+        qid = str(question.id)
+
+        if question.question_type == 'cloze_multiple_blanks':
+            correct_answers = question.get_cloze_correct_answers()
+            user_answers_for_q = user_answers.get(f'q_{question.id}', {})
+            if not isinstance(user_answers_for_q, dict):
+                user_answers_for_q = {}
+
+            blank_scores = {}
+            blanks_correct = 0
+            blanks_total = len(correct_answers)
+            pts_per_blank = round(question.points / blanks_total, 2)
+
+            for blank_num, correct_val in correct_answers.items():
+                user_val = user_answers_for_q.get(str(blank_num), '')
+                is_blank_correct = False
+                if user_val:
+                    user_clean = str(user_val).strip().lower()
+                    correct_clean = str(correct_val).strip().lower()
+                    if '|' in correct_clean:
+                        is_blank_correct = user_clean in [v.strip().lower() for v in correct_clean.split('|')]
+                    else:
+                        is_blank_correct = user_clean == correct_clean
+
+                if is_blank_correct:
+                    blanks_correct += 1
+                    total_score += pts_per_blank
+
+                blank_scores[str(blank_num)] = {
+                    'user_answer': user_val if user_val else 'Javob berilmagan',
+                    'is_correct': is_blank_correct,
+                    'correct_answer': correct_val
+                }
+
+            total_possible += question.points
+            question_results[qid] = {
+                'type': 'cloze_multiple_blanks',
+                'blanks_correct': blanks_correct,
+                'blanks_total': blanks_total,
+                'blanks': blank_scores
+            }
+
+        elif question.question_type == 'matching':
+            correct_answers = question.get_matching_correct_answers()
+            blanks_total = len(correct_answers)
+            blanks_correct = 0
+            blank_scores = {}
+            pts_per_blank = round(question.points / blanks_total, 2)
+
+            for key, correct_val in correct_answers.items():
+                user_val = user_answers.get(f'q_{question.id}_{key}', '')
+                is_correct = str(user_val).strip().lower() == str(correct_val).strip().lower()
+                if is_correct:
+                    blanks_correct += 1
+                    total_score += pts_per_blank
+                blank_scores[key] = {
+                    'user_answer': user_val if user_val else 'Javob berilmagan',
+                    'is_correct': is_correct,
+                    'correct_answer': correct_val
+                }
+
+            total_possible += question.points
+            question_results[qid] = {
+                'type': 'matching',
+                'blanks_correct': blanks_correct,
+                'blanks_total': blanks_total,
+                'blanks': blank_scores
+            }
+
+        elif question.question_type == 'reading_comprehension' and question.reading_text:
+            sub_questions = question.reading_text.reading_questions.all()
+            blanks_total = sub_questions.count()
+            blanks_correct = 0
+            blank_scores = {}
+            pts_per_blank = round(question.points / blanks_total, 2)
+
+            for sq in sub_questions:
+                user_val = user_answers.get(f'q_{sq.id}', '')
+                is_correct = False
+                if user_val:
+                    if '|' in sq.correct_answer:
+                        variants = [v.strip().lower() for v in sq.correct_answer.split('|')]
+                        is_correct = str(user_val).strip().lower() in variants
+                    else:
+                        is_correct = str(user_val).strip().lower() == sq.correct_answer.strip().lower()
+                if is_correct:
+                    blanks_correct += 1
+                    total_score += pts_per_blank
+                blank_scores[str(sq.id)] = {
+                    'user_answer': user_val if user_val else 'Javob berilmagan',
+                    'is_correct': is_correct,
+                    'correct_answer': sq.correct_answer
+                }
+
+            total_possible += question.points
+            question_results[qid] = {
+                'type': 'reading_comprehension',
+                'blanks_correct': blanks_correct,
+                'blanks_total': blanks_total,
+                'blanks': blank_scores
+            }
+
+        elif question.question_type == 'writing':
+            total_possible += question.points
+            q_key = f'q_{question.id}'
+            user_val = user_answers.get(q_key, '') or user_answers.get(str(question.id), '') or ''
+            question_results[qid] = {
+                'type': 'writing',
+                'user_answer': user_val if isinstance(user_val, str) else '',
+                'is_correct': None,
+                'graded': False,
+                'earned_points': 0,
+                'max_points': question.points
+            }
+
+        else:
+            user_answer = user_answers.get(f'q_{question.id}', '')
+            if not user_answer:
+                user_answer = user_answers.get(str(question.id), '')
+
+            is_correct = check_answer_correctness(question, user_answer) if user_answer else False
+            if is_correct:
+                total_score += question.points
+            total_possible += question.points
+
+            question_results[qid] = {
+                'user_answer': user_answer if user_answer else 'Javob berilmagan',
+                'is_correct': is_correct,
+                'correct_answer': get_correct_answer_display(question)
+            }
+
+    return total_score, total_possible, question_results
 
 
 
@@ -1723,339 +1675,2691 @@ from datetime import datetime
 @csrf_exempt
 @require_http_methods(["POST"])
 def quiz_check_status(request):
-    """Test holatini tekshirish API - Student panel uchun"""
+    """Test holatini tekshirish - qolgan vaqtni to'g'ri hisoblash"""
     try:
         data = json.loads(request.body)
         group_id = data.get('group_id')
-        
         if not group_id:
             return JsonResponse({'success': False, 'error': 'group_id kerak'})
+
+        group = Group.objects.get(id=group_id)
+        config, _ = GroupExamConfig.objects.get_or_create(group=group)
         
-        # 1. Cache dan tekshirish
-        cache_key = f'exam_active_{group_id}'
-        is_active = cache.get(cache_key, False)
+        # Database dan holatni olish
+        try:
+            exam_control = ExamControl.objects.get(group_id=group_id)
+            is_active = exam_control.is_active
+            is_paused = exam_control.is_paused
+            elapsed_time = exam_control.elapsed_time
+            started_at = exam_control.started_at
+        except ExamControl.DoesNotExist:
+            is_active = False
+            is_paused = False
+            elapsed_time = 0
+            started_at = None
         
-        # 2. ExamControl dan tekshirish
-        if not is_active:
-            try:
-                exam_control = ExamControl.objects.get(group_id=group_id)
-                is_active = exam_control.is_active
-                if is_active:
-                    # Cache ga qayta saqlash
-                    cache.set(cache_key, True, timeout=3600)
-            except ExamControl.DoesNotExist:
-                pass
+        remaining_time = None
+        total_time = config.time_limit * 60 if config.time_limit > 0 else 0
         
-        # 3. ExamSession dan tekshirish
-        if not is_active:
-            active_session = ExamSession.objects.filter(
-                group_id=group_id, 
-                is_active=True
-            ).first()
-            if active_session:
-                is_active = True
-                cache.set(cache_key, True, timeout=3600)
+        if is_active and started_at and total_time > 0:
+            # Aktiv test - o'tgan vaqtni hisoblash
+            now = timezone.now()
+            elapsed = (now - started_at).total_seconds()
+            remaining_time = max(0, int(total_time - elapsed))
+            
+            # Vaqt tugaganligini tekshirish
+            if remaining_time <= 0:
+                is_active = False
+                exam_control.is_active = False
+                exam_control.save()
+                cache.delete(f'exam_active_{group_id}')
+                
+        elif is_paused and total_time > 0:
+            # Pauza holati - elapsed_time dan foydalanish
+            remaining_time = max(0, total_time - elapsed_time)
+            
+        elif total_time > 0:
+            # Hech qanday holat yo'q
+            remaining_time = total_time
         
-        # Vaqtni olish
-        started_at = cache.get(f'exam_started_{group_id}', None)
-        if not started_at and is_active:
-            started_at = datetime.now().strftime('%H:%M:%S')
-            cache.set(f'exam_started_{group_id}', started_at, timeout=3600)
-        
-        print(f"🔍 Holat tekshirildi - Guruh {group_id}: {'FAOL' if is_active else 'FAOL EMAS'}")
+        # Cache ni yangilash
+        cache.set(f'exam_active_{group_id}', is_active, timeout=3600)
+        if is_paused:
+            cache.set(f'exam_paused_{group_id}', True, timeout=3600)
+        else:
+            cache.delete(f'exam_paused_{group_id}')
         
         return JsonResponse({
             'success': True,
             'is_active': is_active,
-            'started_at': started_at,
+            'is_paused': is_paused,
+            'remaining_time': remaining_time,
+            'elapsed_time': elapsed_time
+        })
+
+    except Exception as e:
+        return JsonResponse({'success': False, 'error': str(e), 'is_active': False, 'is_paused': False}, status=500)
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+@login_required
+@user_passes_test(is_admin_user)
+@csrf_exempt
+@require_http_methods(["POST"])
+def stop_exam_api(request):
+    """Testni to'xtatish - faqat tugallanmagan studentlarning javoblarini yig'ish"""
+    try:
+        data = json.loads(request.body)
+        group_id = data.get('group_id')
+        if not group_id:
+            return JsonResponse({'success': False, 'message': 'group_id kerak'})
+
+        group = Group.objects.get(id=group_id)
+        config, _ = GroupExamConfig.objects.get_or_create(group=group)
+        
+        # BARCHA STUDENTLARNI OLISH
+        all_students = Student.objects.filter(group=group)
+        
+        # Joriy sessiyani olish
+        quiz_session = QuizSession.objects.filter(group=group, is_active=True).first()
+        
+        if not quiz_session:
+            # Sessiya bo'lmasa, yangi yaratish (javoblar saqlanishi uchun)
+            quiz_session = QuizSession.objects.create(
+                group=group, 
+                is_active=False, 
+                started_at=timezone.now(), 
+                ended_at=timezone.now(),
+                created_by=request.user
+            )
+        
+        # Guruhdagi barcha savollarni olish (ball hisoblash uchun)
+        group_categories = GroupCategory.objects.filter(group=group, is_active=True)
+        all_questions = []
+        for gc in group_categories:
+            cat_questions = list(QuizQuestion.objects.filter(category=gc.category))
+            all_questions.extend(cat_questions)
+        
+        saved_count = 0
+        updated_count = 0
+        results_details = []
+        
+        # HAR BIR STUDENT UCHUN - FAQAT TUGALLANMAGANLARNI QAYTA ISHLASH
+        for student in all_students:
+            try:
+                # MUHIM: Faqat tugallanmagan attemptlarni olish
+                attempt = UserExamAttempt.objects.filter(
+                    student=student, 
+                    exam_session=quiz_session, 
+                    is_completed=False
+                ).order_by('-attempt_number').first()
+                
+                # Agar tugallanmagan attempt bo'lmasa, o'tkazib yuboramiz
+                if not attempt:
+                    # Student allaqachon topshirgan
+                    results_details.append({
+                        'student': student.full_name,
+                        'status': 'already_completed'
+                    })
+                    continue
+                
+                # Studentning javoblarini olish
+                user_answers = attempt.user_answers or {}
+                
+                # Studentning savollarini olish
+                if attempt.selected_questions:
+                    student_questions = QuizQuestion.objects.filter(id__in=attempt.selected_questions)
+                else:
+                    student_questions = all_questions
+                
+                # BALLARNI HISOBLASH
+                total_score, total_possible, question_results = _calculate_score_for_attempt(attempt, group)
+                
+                # 100 BALLIK TIZIMGA O'TKAZISH
+                final_score = 0
+                if total_possible > 0:
+                    final_score = round((total_score / total_possible) * 100, 1)
+                
+                # Attemptni tugallangan deb belgilash
+                attempt.is_completed = True
+                attempt.completed_at = timezone.now()
+                attempt.user_answers = user_answers
+                attempt.save()
+                
+                # MUHIM: QuizResult ni faqat mavjud bo'lmasa yaratish
+                result, created = QuizResult.objects.get_or_create(
+                    student=student,
+                    quiz_session=quiz_session,
+                    attempt_number=attempt.attempt_number,
+                    defaults={
+                        'score': final_score,
+                        'total_questions': total_possible,
+                        'answers': question_results
+                    }
+                )
+                
+                if not created:
+                    # Agar mavjud bo'lsa, yangilaymiz
+                    result.score = final_score
+                    result.total_questions = total_possible
+                    result.answers = question_results
+                    result.save()
+                    updated_count += 1
+                else:
+                    saved_count += 1
+                
+                results_details.append({
+                    'student': student.full_name,
+                    'score': final_score,
+                    'total': total_possible,
+                    'status': 'completed'
+                })
+                    
+            except Exception as e:
+                print(f"Xatolik {student.full_name} uchun: {str(e)}")
+                import traceback
+                traceback.print_exc()
+                results_details.append({
+                    'student': student.full_name,
+                    'status': f'error: {str(e)}'
+                })
+        
+        # QuizSessionni yopish
+        quiz_session.is_active = False
+        quiz_session.ended_at = timezone.now()
+        quiz_session.save()
+        
+        # ExamControl ni o'chirish
+        ExamControl.objects.filter(group=group).update(
+            is_active=False,
+            is_paused=False,
+            paused_at=None,
+            elapsed_time=0
+        )
+        
+        # Cache ni tozalash
+        cache.delete(f'exam_active_{group_id}')
+        cache.delete(f'exam_start_time_{group_id}')
+        cache.delete(f'exam_end_time_{group_id}')
+        cache.delete(f'exam_paused_{group_id}')
+        cache.delete(f'exam_elapsed_time_{group_id}')
+        
+        return JsonResponse({
+            'success': True,
+            'message': f'Test to\'xtatildi! {saved_count} ta yangi natija saqlandi, {updated_count} ta natija yangilandi.',
+            'is_active': False,
+            'saved_count': saved_count,
+            'updated_count': updated_count,
+            'total_students': all_students.count(),
+            'details': results_details
         })
         
     except Exception as e:
-        print(f"❌ Holat tekshirish xatosi: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        return JsonResponse({'success': False, 'message': str(e)})
+
+
+
+
+
+
+
+
+
+
+
+@login_required
+@csrf_exempt
+@require_http_methods(["POST"])
+def auto_stop_exam_api(request):
+    try:
+        data = json.loads(request.body) if request.body else {}
+        group_id = data.get('group_id')
+        if not group_id:
+            return JsonResponse({'success': False, 'message': 'group_id kerak'})
+
+        group = Group.objects.get(id=group_id)
+        quiz_session = QuizSession.objects.filter(group=group, is_active=True).first()
+
+        saved_count = 0
+
+        if quiz_session:
+            active_attempts = UserExamAttempt.objects.filter(
+                exam_session=quiz_session, is_completed=False
+            ).select_related('student')
+
+            for attempt in active_attempts:
+                score, total, question_results = _calculate_score_for_attempt(attempt, group)
+
+                attempt.is_completed = True
+                attempt.completed_at = timezone.now()
+                attempt.save()
+
+                QuizResult.objects.create(
+                    student=attempt.student,
+                    quiz_session=quiz_session,
+                    score=score,
+                    total_questions=total,
+                    answers=question_results,
+                    attempt_number=attempt.attempt_number
+                )
+                saved_count += 1
+
+            quiz_session.is_active = False
+            quiz_session.ended_at = timezone.now()
+            quiz_session.save()
+
+        ExamControl.objects.filter(group=group).update(is_active=False)
+        cache.delete(f'exam_active_{group_id}')
+        cache.delete(f'exam_start_time_{group_id}')
+        cache.delete(f'exam_end_time_{group_id}')
+
         return JsonResponse({
-            'success': False, 
-            'error': str(e),
+            'success': True,
+            'message': f'Vaqt tugadi! {saved_count} ta natija saqlandi.',
             'is_active': False
-        }, status=500)
+        })
+
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        return JsonResponse({'success': False, 'message': str(e)})
+
+
+@login_required
+@csrf_exempt
+@require_http_methods(["POST"])
+def check_time_expired_api(request):
+    try:
+        data = json.loads(request.body)
+        group_id = data.get('group_id')
+        if not group_id:
+            return JsonResponse({'success': False, 'message': 'group_id kerak'})
+
+        group = Group.objects.get(id=group_id)
+        config, _ = GroupExamConfig.objects.get_or_create(group=group)
+
+        if config.time_limit <= 0:
+            return JsonResponse({'success': True, 'expired': False})
+
+        start_time_str = cache.get(f'exam_start_time_{group_id}')
+        if not start_time_str:
+            return JsonResponse({'success': True, 'expired': False})
+
+        start_time = datetime.fromisoformat(start_time_str)
+        if timezone.is_naive(start_time):
+            start_time = timezone.make_aware(start_time)
+
+        end_time = start_time + timezone.timedelta(minutes=config.time_limit)
+
+        if timezone.now() >= end_time:
+            return auto_stop_exam_api(request)
+
+        return JsonResponse({'success': True, 'expired': False})
+
+    except Exception as e:
+        return JsonResponse({'success': False, 'message': str(e)})
+
+
+@login_required
+def exam_control(request, group_id):
+    if not is_admin_user(request.user):
+        messages.error(request, 'Sizda bu sahifani ko\'rish huquqi yo\'q!')
+        return redirect('home')
+
+    group = get_object_or_404(Group, id=group_id)
+    exam_control_obj, created = ExamControl.objects.get_or_create(group=group)
+    students = group.students.all().select_related('user')
+    config, _ = GroupExamConfig.objects.get_or_create(group=group)
+
+    group_categories = GroupCategory.objects.filter(group=group).values_list('category_id', flat=True)
+    questions_count = QuizQuestion.objects.filter(category_id__in=group_categories).count()
+
+    context = {
+        'group': group,
+        'exam_control': exam_control_obj,
+        'students': students,
+        'questions_count': questions_count,
+        'config': config,
+    }
+    return render(request, 'groups/exam_control.html', context)
+
+
+@login_required
+@csrf_exempt
+def check_audio_play_api(request):
+    if request.method != 'POST':
+        return JsonResponse({'success': False, 'message': 'Faqat POST so\'rov'})
+
+    try:
+        data = json.loads(request.body)
+        group_id = data.get('group_id')
+        category_id = data.get('category_id')
+
+        if not group_id or not category_id:
+            return JsonResponse({'success': False, 'message': 'group_id va category_id kerak'})
+
+        student = Student.objects.get(user=request.user)
+        group = Group.objects.get(id=group_id)
+        category = Category.objects.get(id=category_id)
+
+        quiz_session = QuizSession.objects.filter(group=group, is_active=True).first()
+
+        max_plays = category.max_audio_plays if category.max_audio_plays is not None else 1
+
+        audio_play, created = StudentAudioPlay.objects.get_or_create(
+            student=student,
+            group=group,
+            category=category,
+            exam_session=quiz_session,
+            defaults={'max_plays': max_plays, 'play_count': 0}
+        )
+
+        if audio_play.max_plays != max_plays:
+            audio_play.max_plays = max_plays
+            audio_play.save()
+
+        return JsonResponse({
+            'success': True,
+            'can_play': audio_play.can_play(),
+            'play_count': audio_play.play_count,
+            'max_plays': audio_play.max_plays
+        })
+
+    except Student.DoesNotExist:
+        return JsonResponse({'success': False, 'message': 'Student topilmadi!'})
+    except Group.DoesNotExist:
+        return JsonResponse({'success': False, 'message': 'Guruh topilmadi!'})
+    except Category.DoesNotExist:
+        return JsonResponse({'success': False, 'message': 'Kategoriya topilmadi!'})
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        return JsonResponse({'success': False, 'message': str(e)})
+
+
+@login_required
+@csrf_exempt
+def record_audio_play_api(request):
+    if request.method != 'POST':
+        return JsonResponse({'success': False, 'message': 'Faqat POST so\'rov'})
+
+    try:
+        data = json.loads(request.body)
+        group_id = data.get('group_id')
+        category_id = data.get('category_id')
+
+        if not group_id or not category_id:
+            return JsonResponse({'success': False, 'message': 'group_id va category_id kerak'})
+
+        student = Student.objects.get(user=request.user)
+        group = Group.objects.get(id=group_id)
+        category = Category.objects.get(id=category_id)
+
+        quiz_session = QuizSession.objects.filter(group=group, is_active=True).first()
+
+        max_plays = category.max_audio_plays if category.max_audio_plays is not None else 1
+
+        audio_play, created = StudentAudioPlay.objects.get_or_create(
+            student=student,
+            group=group,
+            category=category,
+            exam_session=quiz_session,
+            defaults={'max_plays': max_plays, 'play_count': 0}
+        )
+
+        if audio_play.can_play():
+            audio_play.increment_play()
+            max_display = audio_play.max_plays if audio_play.max_plays > 0 else '∞'
+            return JsonResponse({
+                'success': True,
+                'play_count': audio_play.play_count,
+                'can_play': audio_play.can_play(),
+                'max_plays': audio_play.max_plays,
+                'message': f'Audio eshitildi ({audio_play.play_count}/{max_display})'
+            })
+        else:
+            return JsonResponse({
+                'success': False,
+                'message': f'Siz maksimal {audio_play.max_plays} marta eshitgansiz!'
+            })
+
+    except Student.DoesNotExist:
+        return JsonResponse({'success': False, 'message': 'Student topilmadi!'})
+    except Group.DoesNotExist:
+        return JsonResponse({'success': False, 'message': 'Guruh topilmadi!'})
+    except Category.DoesNotExist:
+        return JsonResponse({'success': False, 'message': 'Kategoriya topilmadi!'})
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        return JsonResponse({'success': False, 'message': str(e)})
+
+
+@login_required
+@user_passes_test(is_admin_user)
+def quiz_admin(request):
+    questions = QuizQuestion.objects.all().select_related('category').order_by('-created_at')
+    categories = Category.objects.all()
+    groups = Group.objects.all()
+    return render(request, 'groups/quiz_admin.html', {
+        'questions': questions,
+        'categories': categories,
+        'groups': groups,
+    })
+
+
+@login_required
+@user_passes_test(is_admin_user)
+def quiz_add_question(request):
+    if request.method == 'POST':
+        category_id = request.POST.get('category_id')
+        question_text = request.POST.get('question_text', '').strip()
+        correct_answer = request.POST.get('correct_answer', '').strip().lower()
+
+        if not question_text or not correct_answer:
+            messages.error(request, 'Savol matni va to\'g\'ri javob kiritilishi shart!')
+            return redirect('quiz_admin')
+
+        if category_id:
+            try:
+                category = Category.objects.get(id=category_id)
+                QuizQuestion.objects.create(
+                    category=category,
+                    question_text=question_text,
+                    correct_answer=correct_answer
+                )
+                messages.success(request, f'Savol "{category.name}" kategoriyasiga qo\'shildi!')
+            except Category.DoesNotExist:
+                messages.error(request, 'Kategoriya topilmadi!')
+        else:
+            messages.error(request, 'Kategoriya tanlash shart!')
+    return redirect('quiz_admin')
+
+
+@login_required
+@user_passes_test(is_admin_user)
+def quiz_edit_question(request, question_id):
+    question = get_object_or_404(QuizQuestion, id=question_id)
+    if request.method == 'POST':
+        category_id = request.POST.get('category_id')
+        question_text = request.POST.get('question_text', '').strip()
+        correct_answer = request.POST.get('correct_answer', '').strip().lower()
+        if not question_text or not correct_answer:
+            messages.error(request, 'Savol matni va to\'g\'ri javob kiritilishi shart!')
+        else:
+            try:
+                question.question_text = question_text
+                question.correct_answer = correct_answer
+                if category_id:
+                    question.category = Category.objects.get(id=category_id)
+                question.save()
+                messages.success(request, 'Savol muvaffaqiyatli tahrirlandi!')
+            except Category.DoesNotExist:
+                messages.error(request, 'Kategoriya topilmadi!')
+            except Exception as e:
+                messages.error(request, f'Xatolik: {str(e)}')
+        return redirect('quiz_admin')
+
+    return render(request, 'groups/quiz_edit.html', {
+        'question': question,
+        'categories': Category.objects.all(),
+    })
+
+
+@login_required
+@user_passes_test(is_admin_user)
+def quiz_delete_question(request, question_id):
+    question = get_object_or_404(QuizQuestion, id=question_id)
+    question.delete()
+    messages.success(request, 'Savol o\'chirildi!')
+    return redirect('quiz_admin')
+
+@login_required
+@user_passes_test(is_admin_user)
+def quiz_result_details_api(request, result_id):
+    try:
+        result = QuizResult.objects.get(id=result_id)
+        answers_html = '<div class="space-y-2">'
+        
+        if result.answers:
+            for qid, answer in result.answers.items():
+                if isinstance(answer, dict):
+                    # Agar 'blanks' mavjud bo'lsa (matching, cloze, reading)
+                    if 'blanks' in answer:
+                        for bnum, bdata in answer['blanks'].items():
+                            is_correct = bdata.get('is_correct', False)
+                            answers_html += f'''
+                            <div class="border-l-4 {'border-green-500' if is_correct else 'border-red-400'} bg-gray-50 p-3 rounded">
+                                <p class="text-sm">
+                                    <span class="text-gray-500">Savol {qid} - Bo\'sh joy {bnum}:</span><br>
+                                    <span class="font-medium">Javob: {bdata.get('user_answer', '-')}</span>
+                                    {'✅' if is_correct else '❌'}
+                                    <span class="text-gray-400 text-xs ml-2">(To\'g\'ri: {bdata.get('correct_answer', '-')})</span>
+                                </p>
+                            </div>'''
+                    else:
+                        # Oddiy savol
+                        is_correct = answer.get('is_correct', False)
+                        user_answer = answer.get('user_answer', 'Javob berilmagan')
+                        correct_answer = answer.get('correct_answer', '-')
+                        answers_html += f'''
+                        <div class="border-l-4 {'border-green-500' if is_correct else 'border-red-400'} bg-gray-50 p-3 rounded">
+                            <p class="text-sm">
+                                <span class="text-gray-500">Savol {qid}:</span><br>
+                                <span class="font-medium">Javob: {user_answer}</span>
+                                {'✅' if is_correct else '❌'}
+                                <span class="text-gray-400 text-xs ml-2">(To\'g\'ri: {correct_answer})</span>
+                            </p>
+                        </div>'''
+                else:
+                    # String formatdagi javob
+                    answers_html += f'''
+                    <div class="border-l-4 border-gray-400 bg-gray-50 p-3 rounded">
+                        <p class="text-sm">Savol {qid}: {answer}</p>
+                    </div>'''
+        else:
+            answers_html += '<p class="text-gray-500 text-center">Javoblar tafsilotlari mavjud emas</p>'
+        
+        answers_html += '</div>'
+
+        total_possible = result.total_questions or 0
+        score_pct = float(result.score)
+        raw_score = round((score_pct / 100) * total_possible, 1) if total_possible > 0 else 0
+        return JsonResponse({
+            'success': True,
+            'student_name': result.student.full_name,
+            'score': score_pct,
+            'raw_score': raw_score,
+            'total': total_possible,
+            'percentage': float(result.percentage),
+            'submitted_at': result.submitted_at.strftime('%Y-%m-%d %H:%M:%S'),
+            'answers_html': answers_html
+        })
+    except QuizResult.DoesNotExist:
+        return JsonResponse({'success': False, 'message': 'Natija topilmadi'})
+    except Exception as e:
+        return JsonResponse({'success': False, 'message': str(e)})
+
+@login_required
+@user_passes_test(is_admin_user)
+def group_exam_config(request, group_id):
+    group = get_object_or_404(Group, id=group_id)
+    config, created = GroupExamConfig.objects.get_or_create(group=group)
+    group_categories = GroupCategory.objects.filter(group=group, is_active=True).select_related('category')
+    category_ids = [gc.category.id for gc in group_categories]
+    total_questions = QuizQuestion.objects.filter(category_id__in=category_ids).count()
+
+    category_configs = {}
+    for gc in group_categories:
+        cat_config, _ = CategoryGroupConfig.objects.get_or_create(
+            category=gc.category, group=group,
+            defaults={'questions_count': 3, 'random_order': True, 'is_active': True}
+        )
+        category_configs[gc.category.id] = cat_config
+
+    if request.method == 'POST':
+        try:
+            questions_per_student = int(request.POST.get('questions_per_student', 5))
+            random_order = request.POST.get('random_order') == 'on'
+            show_correct_answer = request.POST.get('show_correct_answer') == 'on'
+            time_limit = int(request.POST.get('time_limit', 0))
+            max_attempts = int(request.POST.get('max_attempts', 1))
+            use_category_configs = request.POST.get('use_category_configs') == 'on'
+
+            if questions_per_student <= 0:
+                messages.error(request, 'Savollar soni 0 dan katta bo\'lishi kerak!')
+                return redirect('group_exam_config', group_id=group.id)
+            if max_attempts <= 0:
+                messages.error(request, 'Urinishlar soni 0 dan katta bo\'lishi kerak!')
+                return redirect('group_exam_config', group_id=group.id)
+
+            config.questions_per_student = questions_per_student
+            config.random_order = random_order
+            config.show_correct_answer = show_correct_answer
+            config.time_limit = time_limit
+            config.max_attempts = max_attempts
+            config.use_category_configs = use_category_configs
+            config.save()
+
+            messages.success(request, '✅ Sozlamalar saqlandi!')
+            return redirect('group_exam_config', group_id=group.id)
+        except ValueError:
+            messages.error(request, 'Noto\'g\'ri raqam kiritildi!')
+        except Exception as e:
+            messages.error(request, f'Xatolik: {str(e)}')
+
+    context = {
+        'group': group,
+        'config': config,
+        'total_questions': total_questions,
+        'group_categories': group_categories,
+        'category_configs': category_configs,
+    }
+    return render(request, 'groups/group_exam_config.html', context)
+
+
+@login_required
+@user_passes_test(is_admin_user)
+@csrf_exempt
+def save_category_configs_api(request, group_id):
+    if request.method != 'POST':
+        return JsonResponse({'success': False, 'message': 'Faqat POST so\'rov'})
+    try:
+        group = get_object_or_404(Group, id=group_id)
+        data = json.loads(request.body)
+        configs = data.get('configs', [])
+        for cfg in configs:
+            category_id = cfg.get('category_id')
+            questions_count = cfg.get('questions_count', 5)
+            random_order = cfg.get('random_order', True)
+            CategoryGroupConfig.objects.update_or_create(
+                group=group, category_id=category_id,
+                defaults={'questions_count': questions_count, 'random_order': random_order, 'is_active': True}
+            )
+        return JsonResponse({'success': True, 'message': f'{len(configs)} ta sozlama saqlandi'})
+    except Exception as e:
+        return JsonResponse({'success': False, 'message': str(e)})
+
+
+@login_required
+@user_passes_test(is_admin_user)
+def group_questions_preview(request, group_id):
+    group = get_object_or_404(Group, id=group_id)
+    config, _ = GroupExamConfig.objects.get_or_create(group=group)
+    group_categories = GroupCategory.objects.filter(group=group).values_list('category_id', flat=True)
+    all_questions = list(QuizQuestion.objects.filter(category_id__in=group_categories))
+    question_count = min(config.questions_per_student, len(all_questions))
+    random_questions = random.sample(all_questions, question_count) if question_count > 0 else []
+
+    return render(request, 'groups/group_questions_preview.html', {
+        'group': group,
+        'config': config,
+        'random_questions': random_questions,
+        'total_available': len(all_questions),
+    })
+
+
+@login_required
+@user_passes_test(is_admin_user)
+def category_list(request):
+    categories = Category.objects.all().annotate(
+        questions_count=Count('quiz_questions'),
+        groups_count=Count('group_categories')
+    )
+    return render(request, 'groups/category_list.html', {
+        'categories': categories,
+        'total_categories': categories.count(),
+    })
+
+
+@login_required
+@user_passes_test(is_admin_user)
+def category_add(request):
+    if request.method == 'POST':
+        name = request.POST.get('name', '').strip()
+        description = request.POST.get('description', '').strip()
+        if not name:
+            messages.error(request, 'Kategoriya nomi kiritilishi shart!')
+        elif Category.objects.filter(name__iexact=name).exists():
+            messages.error(request, f'"{name}" nomli kategoriya allaqachon mavjud!')
+        else:
+            Category.objects.create(name=name, description=description)
+            messages.success(request, f'✅ "{name}" kategoriyasi qo\'shildi!')
+            return redirect('category_list')
+    return render(request, 'groups/category_form.html', {'title': 'Kategoriya qo\'shish'})
+
+
+@login_required
+@user_passes_test(is_admin_user)
+def category_edit(request, pk):
+    category = get_object_or_404(Category, pk=pk)
+    if request.method == 'POST':
+        name = request.POST.get('name', '').strip()
+        description = request.POST.get('description', '').strip()
+        if not name:
+            messages.error(request, 'Kategoriya nomi kiritilishi shart!')
+        elif Category.objects.filter(name__iexact=name).exclude(pk=pk).exists():
+            messages.error(request, f'"{name}" nomli kategoriya allaqachon mavjud!')
+        else:
+            category.name = name
+            category.description = description
+            category.save()
+            messages.success(request, f'✅ "{name}" kategoriyasi yangilandi!')
+            return redirect('category_list')
+    return render(request, 'groups/category_form.html', {
+        'category': category,
+        'title': 'Kategoriyani tahrirlash'
+    })
+
+
+@login_required
+@user_passes_test(is_admin_user)
+def category_delete(request, pk):
+    category = get_object_or_404(Category, pk=pk)
+    if request.method == 'POST':
+        questions_count = category.quiz_questions.count()
+        category_name = category.name
+        category.delete()
+        if questions_count > 0:
+            messages.warning(request, f'🗑️ "{category_name}" va {questions_count} ta savol o\'chirildi!')
+        else:
+            messages.success(request, f'🗑️ "{category_name}" kategoriyasi o\'chirildi!')
+        return redirect('category_list')
+    return render(request, 'groups/category_confirm_delete.html', {'category': category})
+
+
+@login_required
+@user_passes_test(is_admin_user)
+def category_group_config(request, category_id):
+    category = get_object_or_404(Category, id=category_id)
+    configs = CategoryGroupConfig.objects.filter(category=category).select_related('group')
+    all_groups = Group.objects.all()
+    configured_group_ids = configs.values_list('group_id', flat=True)
+    available_groups = all_groups.exclude(id__in=configured_group_ids)
+
+    return render(request, 'groups/category_group_config.html', {
+        'category': category,
+        'configs': configs,
+        'available_groups': available_groups,
+        'total_questions': category.quiz_questions.count(),
+    })
+
+
+@login_required
+@user_passes_test(is_admin_user)
+def category_group_config_add(request, category_id):
+    category = get_object_or_404(Category, id=category_id)
+    if request.method == 'POST':
+        group_id = request.POST.get('group_id')
+        questions_count = int(request.POST.get('questions_count', 5))
+        random_order = request.POST.get('random_order') == 'on'
+        total_questions = category.quiz_questions.count()
+
+        if questions_count > total_questions and total_questions > 0:
+            messages.warning(request, f"Kategoriyada faqat {total_questions} ta savol bor.")
+            questions_count = total_questions
+        if questions_count <= 0:
+            messages.error(request, "Savollar soni 0 dan katta bo'lishi kerak!")
+            return redirect('category_group_config', category_id=category.id)
+
+        try:
+            group = Group.objects.get(id=group_id)
+            config, created = CategoryGroupConfig.objects.get_or_create(
+                category=category, group=group,
+                defaults={'questions_count': questions_count, 'random_order': random_order, 'is_active': True}
+            )
+            if not created:
+                config.questions_count = questions_count
+                config.random_order = random_order
+                config.save()
+                messages.success(request, 'Sozlamalar yangilandi!')
+            else:
+                messages.success(request, f'{group.name} guruhi uchun sozlamalar qo\'shildi!')
+        except Group.DoesNotExist:
+            messages.error(request, 'Guruh topilmadi!')
+        except Exception as e:
+            messages.error(request, f'Xatolik: {str(e)}')
+    return redirect('category_group_config', category_id=category.id)
+
+
+@login_required
+@user_passes_test(is_admin_user)
+def category_group_config_edit(request, config_id):
+    config = get_object_or_404(CategoryGroupConfig, id=config_id)
+    if request.method == 'POST':
+        questions_count = int(request.POST.get('questions_count', 5))
+        random_order = request.POST.get('random_order') == 'on'
+        is_active = request.POST.get('is_active') == 'on'
+        total_questions = config.category.quiz_questions.count()
+
+        if questions_count > total_questions and total_questions > 0:
+            questions_count = total_questions
+        if questions_count <= 0:
+            messages.error(request, "Savollar soni 0 dan katta bo'lishi kerak!")
+        else:
+            config.questions_count = questions_count
+            config.random_order = random_order
+            config.is_active = is_active
+            config.save()
+            messages.success(request, 'Sozlamalar saqlandi!')
+        return redirect('category_group_config', category_id=config.category.id)
+
+    return render(request, 'groups/category_group_config_edit.html', {
+        'config': config,
+        'total_questions': config.category.quiz_questions.count(),
+    })
+
+
+@login_required
+@user_passes_test(is_admin_user)
+def category_group_config_delete(request, config_id):
+    config = get_object_or_404(CategoryGroupConfig, id=config_id)
+    category_id = config.category.id
+    group_name = config.group.name
+    if request.method == 'POST':
+        config.delete()
+        messages.success(request, f'{group_name} guruhi uchun sozlamalar o\'chirildi!')
+        return redirect('category_group_config', category_id=category_id)
+    return render(request, 'groups/category_group_config_confirm_delete.html', {'config': config})
+
+
+@login_required
+@user_passes_test(is_admin_user)
+def category_questions_list(request, category_id):
+    category = get_object_or_404(Category, id=category_id)
+    questions = QuizQuestion.objects.filter(category=category).order_by('id')
+    groups_using = Group.objects.filter(group_categories__category=category).distinct()
+    return render(request, 'groups/category_questions_list.html', {
+        'category': category,
+        'questions': questions,
+        'total_questions': questions.count(),
+        'groups_using': groups_using,
+    })
+
+
+@login_required
+@user_passes_test(is_admin_user)
+def category_question_add(request, category_id):
+    category = get_object_or_404(Category, id=category_id)
+    if request.method == 'POST':
+        question_text = request.POST.get('question_text', '').strip()
+        correct_answer = request.POST.get('correct_answer', '').strip().lower()
+        if not question_text or not correct_answer:
+            messages.error(request, 'Savol matni va to\'g\'ri javob kiritilishi shart!')
+        else:
+            QuizQuestion.objects.create(
+                category=category, question_text=question_text, correct_answer=correct_answer
+            )
+            messages.success(request, f'✅ "{category.name}" kategoriyasiga yangi savol qo\'shildi!')
+            return redirect('category_questions_list', category_id=category.id)
+    return render(request, 'groups/category_question_form.html', {
+        'category': category, 'is_edit': False,
+    })
+
+
+@login_required
+@user_passes_test(is_admin_user)
+def category_question_edit(request, question_id):
+    question = get_object_or_404(QuizQuestion, id=question_id)
+    category = question.category
+    if request.method == 'POST':
+        question_text = request.POST.get('question_text', '').strip()
+        correct_answer = request.POST.get('correct_answer', '').strip().lower()
+        if not question_text or not correct_answer:
+            messages.error(request, 'Savol matni va to\'g\'ri javob kiritilishi shart!')
+        else:
+            question.question_text = question_text
+            question.correct_answer = correct_answer
+            question.save()
+            messages.success(request, '✅ Savol tahrirlandi!')
+            return redirect('category_questions_list', category_id=category.id)
+    return render(request, 'groups/category_question_form.html', {
+        'question': question, 'category': category, 'is_edit': True,
+    })
+
+
+@login_required
+@user_passes_test(is_admin_user)
+def category_question_delete(request, question_id):
+    question = get_object_or_404(QuizQuestion, id=question_id)
+    category = question.category
+    if request.method == 'POST':
+        question.delete()
+        messages.success(request, '🗑️ Savol o\'chirildi!')
+        return redirect('category_questions_list', category_id=category.id)
+    return render(request, 'groups/category_question_confirm_delete.html', {
+        'question': question, 'category': category,
+    })
+
+
+@login_required
+@user_passes_test(is_admin_user)
+def group_categories_manage(request, group_id):
+    group = get_object_or_404(Group, id=group_id)
+    assigned_categories = GroupCategory.objects.filter(group=group).select_related('category')
+    assigned_ids = [gc.category.id for gc in assigned_categories]
+    available_categories = Category.objects.exclude(id__in=assigned_ids)
+    return render(request, 'groups/group_categories_manage.html', {
+        'group': group,
+        'assigned_categories': assigned_categories,
+        'available_categories': available_categories,
+    })
+
+
+@login_required
+@user_passes_test(is_admin_user)
+def group_category_add(request, group_id):
+    if request.method != 'POST':
+        messages.error(request, 'Faqat POST so\'rov!')
+        return redirect('group_categories_manage', group_id=group_id)
+    try:
+        group = get_object_or_404(Group, id=group_id)
+        category_id = request.POST.get('category_id')
+        if not category_id:
+            messages.error(request, 'Kategoriya tanlanmagan!')
+            return redirect('group_categories_manage', group_id=group_id)
+        category = get_object_or_404(Category, id=category_id)
+        if not GroupCategory.objects.filter(group=group, category=category).exists():
+            GroupCategory.objects.create(group=group, category=category)
+            messages.success(request, f'✅ "{category.name}" kategoriyasi qo\'shildi!')
+        else:
+            messages.warning(request, f'"{category.name}" allaqachon mavjud!')
+    except Exception as e:
+        messages.error(request, f'Xatolik: {str(e)}')
+    return redirect('group_categories_manage', group_id=group_id)
+
+
+@login_required
+@user_passes_test(is_admin_user)
+def group_category_remove(request, group_category_id):
+    if request.method != 'POST':
+        messages.error(request, 'Faqat POST so\'rov!')
+        return redirect('admin_panel')
+    try:
+        group_category_obj = get_object_or_404(GroupCategory, id=group_category_id)
+        group = group_category_obj.group
+        category_name = group_category_obj.category.name
+        group_category_obj.delete()
+        messages.success(request, f'🗑️ "{category_name}" kategoriyasi olib tashlandi!')
+    except Exception as e:
+        messages.error(request, f'Xatolik: {str(e)}')
+        return redirect('admin_panel')
+    return redirect('group_categories_manage', group_id=group.id)
+
+
+@login_required
+@user_passes_test(is_admin_user)
+def rules_edit(request):
+    rules, created = Rules.objects.get_or_create(id=1)
+    if request.method == 'POST':
+        try:
+            rules.video_url = request.POST.get('video_url', '')
+            if request.FILES.get('video_file'):
+                rules.video_file = request.FILES['video_file']
+            if request.FILES.get('image1'):
+                rules.image1 = request.FILES['image1']
+            rules.image1_title = request.POST.get('image1_title', 'Imtihon tartibi')
+            rules.image1_description = request.POST.get('image1_description', '')
+            if request.FILES.get('image2'):
+                rules.image2 = request.FILES['image2']
+            rules.image2_title = request.POST.get('image2_title', 'Baholash mezonlari')
+            rules.image2_description = request.POST.get('image2_description', '')
+            rules.rules_text = request.POST.get('rules_text', '')
+            rules.save()
+            messages.success(request, '✅ Qonun va qoidalar saqlandi!')
+            return redirect('rules_edit')
+        except Exception as e:
+            messages.error(request, f'Xatolik: {str(e)}')
+    return render(request, 'groups/rules_edit.html', {'rules': rules})
+
+
+@login_required
+@user_passes_test(is_admin_user)
+@csrf_exempt
+def get_group_api(request, group_id):
+    try:
+        group = Group.objects.get(id=group_id)
+        return JsonResponse({'success': True, 'id': group.id, 'name': group.name, 'teacher': group.teacher})
+    except Group.DoesNotExist:
+        return JsonResponse({'success': False, 'error': 'Guruh topilmadi'}, status=404)
+
+
+@login_required
+@user_passes_test(is_admin_user)
+@csrf_exempt
+def category_group_config_edit_api(request, config_id):
+    if request.method != 'POST':
+        return JsonResponse({'success': False, 'message': 'Faqat POST so\'rov'})
+    try:
+        data = json.loads(request.body)
+        config = get_object_or_404(CategoryGroupConfig, id=config_id)
+        config.questions_count = data.get('questions_count', 3)
+        config.random_order = data.get('random_order', True)
+        config.is_active = data.get('is_active', True)
+        config.save()
+        return JsonResponse({'success': True, 'message': 'Sozlama tahrirlandi'})
+    except Exception as e:
+        return JsonResponse({'success': False, 'message': str(e)})
+
+
+@login_required
+@user_passes_test(is_admin_user)
+@csrf_exempt
+def category_group_config_delete_api(request, config_id):
+    if request.method != 'POST':
+        return JsonResponse({'success': False, 'message': 'Faqat POST so\'rov'})
+    try:
+        config = get_object_or_404(CategoryGroupConfig, id=config_id)
+        config.delete()
+        return JsonResponse({'success': True, 'message': 'Sozlama o\'chirildi'})
+    except Exception as e:
+        return JsonResponse({'success': False, 'message': str(e)})
+
+
+@login_required
+@csrf_exempt
+@require_http_methods(["GET", "POST"])
+def check_exam_api(request):
+    try:
+        student = request.user.student_profile if hasattr(request.user, 'student_profile') else None
+        if not student:
+            return JsonResponse({'success': False, 'error': 'Student profile not found'}, status=400)
+
+        active_session = ExamSession.objects.filter(group=student.group, is_active=True).first()
+        if active_session:
+            return JsonResponse({'success': True, 'has_active_exam': True, 'exam_id': active_session.id})
+        return JsonResponse({'success': True, 'has_active_exam': False})
+    except Exception as e:
+        return JsonResponse({'success': False, 'error': str(e)}, status=500)
 
 
 
 
 
 
+@login_required
+@user_passes_test(is_admin_user)
+def student_attempts_api(request, student_id):
+    try:
+        student = Student.objects.get(id=student_id)
+        
+        # MUHIM: Distinct natijalarni olish (dublikatlarsiz)
+        # Har bir attempt_number uchun faqat eng oxirgi natijani olamiz
+        from django.db.models import Max, Subquery, OuterRef
+        
+        # Har bir attempt_number uchun eng oxirgi natijaning ID'sini topish
+        latest_per_attempt = QuizResult.objects.filter(
+            student=student
+        ).values('attempt_number').annotate(
+            latest_id=Max('id')
+        ).values_list('latest_id', flat=True)
+        
+        # Faqat eng oxirgi natijalarni olish
+        results = QuizResult.objects.filter(
+            id__in=latest_per_attempt
+        ).order_by('-attempt_number')
+        
+        attempts = []
+        best_score = 0
+        total_score = 0
+        
+        for r in results:
+            # Har bir urinish uchun ballni hisoblash
+            total_ball = float(r.total_questions) if r.total_questions else 0
+            score_value = round((float(r.score) / 100) * total_ball, 1) if total_ball > 0 else 0
+            attempts.append({
+                'id': r.id,
+                'attempt_number': r.attempt_number,
+                'score': score_value,
+                'total': total_ball,
+                'total_ball': total_ball,
+                'percentage': float(r.percentage),
+                'submitted_at': timezone.localtime(r.submitted_at).strftime('%Y-%m-%d %H:%M:%S'),
+                'is_last': (results.first().id == r.id) if results.exists() else False
+            })
+            
+            if score_value > best_score:
+                best_score = score_value
+            total_score += score_value
+        
+        avg_score = round(total_score / len(results), 1) if results else 0
+        
+        # Debug uchun
+        print(f"Student {student.full_name} - Found {len(attempts)} attempts (unique)")
+        for a in attempts:
+            print(f"  Attempt #{a['attempt_number']}: score={a['score']}, id={a['id']}")
+        
+        return JsonResponse({
+            'success': True,
+            'student_name': student.full_name,
+            'total_attempts': len(attempts),
+            'best_score': best_score,
+            'avg_score': avg_score,
+            'attempts': attempts
+        })
+        
+    except Student.DoesNotExist:
+        return JsonResponse({'success': False, 'message': 'Student topilmadi'})
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        return JsonResponse({'success': False, 'message': str(e)})
 
 
 
-def check_answer(question, user_answer):
-    """Savol turiga qarab javobni tekshirish"""
-    if question.question_type == 'fill_blank':
-        return user_answer.strip().lower() == question.correct_answer.strip().lower()
-    
-    elif question.question_type == 'sentence_arrangement':
-        user_sentence = ' '.join(user_answer.split()).strip().lower()
-        correct_sentence = ' '.join(question.correct_sentence.split()).strip().lower()
-        return user_sentence == correct_sentence
-    
-    return False
+from django.shortcuts import render
+
+def offline_view(request):
+    return render(request, 'offline.html')
 
 
 
 
 
-
-
-
-# groups/views.py
-
-from django.shortcuts import render, redirect, get_object_or_404
-from django.contrib.admin.views.decorators import staff_member_required
-from django.contrib import messages
-from .models import QuizQuestion, Category, QuestionType
-
-# groups/views.py ga qo'shing
-
-from django.shortcuts import render, redirect, get_object_or_404
-from django.contrib.admin.views.decorators import staff_member_required
-from django.contrib import messages
-from django.db.models import Q
-from .models import QuizQuestion, Category
 
 @staff_member_required
 def admin_question_list(request):
-    """Savollar ro'yxati - maxsus sahifa"""
     questions = QuizQuestion.objects.all().select_related('category').order_by('-created_at')
-    
-    # Qidirish
     search = request.GET.get('search', '')
     if search:
         questions = questions.filter(
-            Q(question_text__icontains=search) | 
+            Q(question_text__icontains=search) |
             Q(correct_answer__icontains=search) |
             Q(correct_sentence__icontains=search)
         )
-    
-    # Filtr
     question_type = request.GET.get('type', '')
     if question_type:
         questions = questions.filter(question_type=question_type)
-    
     category_id = request.GET.get('category', '')
     if category_id:
         questions = questions.filter(category_id=category_id)
-    
-    categories = Category.objects.all()
-    
-    context = {
+
+    return render(request, 'groups/admin_question_list.html', {
         'questions': questions,
-        'categories': categories,
+        'categories': Category.objects.all(),
         'search': search,
         'selected_type': question_type,
         'selected_category': category_id,
-    }
-    return render(request, 'groups/admin_question_list.html', context)
+    })
 
 @staff_member_required
 def admin_question_add(request):
-    """Yangi savol qo'shish - maxsus sahifa"""
     if request.method == 'POST':
         question_type = request.POST.get('question_type')
         category_id = request.POST.get('category')
-        
+
+        if not question_type:
+            messages.error(request, "Iltimos, savol turini tanlang!")
+            return redirect('admin_question_add')
+
         try:
             category = Category.objects.get(id=category_id)
-            
+            points = int(request.POST.get('points', 1))
+
+            audio_updated = False
+
+            # Audio fayl yuklash
+            if 'category_audio' in request.FILES:
+                audio_file = request.FILES['category_audio']
+                if audio_file.size <= 10 * 1024 * 1024:
+                    if category.audio_file:
+                        try:
+                            category.audio_file.delete(save=False)
+                        except Exception:
+                            pass
+                    category.audio_file = audio_file
+                    audio_updated = True
+                    messages.success(request, "✅ Audio fayl yuklandi!")
+                else:
+                    messages.warning(request, 'Audio fayl 10MB dan kichik bo\'lishi kerak!')
+
+            # Audio faylni o'chirish
+            if request.POST.get('clear_category_audio') == 'true':
+                if category.audio_file:
+                    try:
+                        category.audio_file.delete(save=False)
+                    except Exception:
+                        pass
+                    category.audio_file = None
+                    audio_updated = True
+                    messages.success(request, "🗑️ Audio fayl o'chirildi!")
+
+            # Maksimal eshitish soni
+            max_plays = request.POST.get('category_max_audio_plays')
+            if max_plays:
+                try:
+                    category.max_audio_plays = int(max_plays)
+                    audio_updated = True
+                except ValueError:
+                    pass
+
+            # Audio ko'rsatmasi
+            instruction = request.POST.get('category_audio_instruction')
+            if instruction is not None:
+                category.audio_instruction = instruction
+                audio_updated = True
+
+            if audio_updated:
+                category.save()
+
+            # ============ 1. FILL BLANK (Word Bank) ============
             if question_type == 'fill_blank':
-                question_text = request.POST.get('question_text')
-                correct_answer = request.POST.get('correct_answer')
-                
+                question_text = request.POST.get('fb_question_text', '').strip()
+                correct_answer = request.POST.get('fb_correct_answer', '').strip()
                 if not question_text or not correct_answer:
                     messages.error(request, "Savol matni va to'g'ri javobni kiriting!")
                 else:
                     QuizQuestion.objects.create(
-                        category=category,
-                        question_type='fill_blank',
-                        question_text=question_text,
-                        correct_answer=correct_answer
+                        category=category, question_type='fill_blank',
+                        question_text=question_text, correct_answer=correct_answer,
+                        points=points
                     )
-                    messages.success(request, "Savol muvaffaqiyatli qo'shildi!")
+                    messages.success(request, "✅ Bo'sh joy (Word Bank) savoli qo'shildi!")
                     return redirect('admin_question_list')
-                    
-            elif question_type == 'sentence_arrangement':
-                scrambled_words = request.POST.get('scrambled_words')
-                correct_sentence = request.POST.get('correct_sentence')
-                
-                if not scrambled_words or not correct_sentence:
-                    messages.error(request, "So'zlar va to'g'ri gapni kiriting!")
+
+            # ============ 2. FILL BLANK NO WORD ============
+            elif question_type == 'fill_blank_no_word':
+                question_text = request.POST.get('fbnw_question_text', '').strip()
+                correct_answer = request.POST.get('fbnw_correct_answer', '').strip()
+                if not question_text or not correct_answer:
+                    messages.error(request, "Savol matni va to'g'ri javobni kiriting!")
                 else:
                     QuizQuestion.objects.create(
-                        category=category,
-                        question_type='sentence_arrangement',
-                        scrambled_words=scrambled_words,
-                        correct_sentence=correct_sentence
+                        category=category, question_type='fill_blank_no_word',
+                        question_text=question_text, correct_answer=correct_answer,
+                        points=points
                     )
-                    messages.success(request, "Savol muvaffaqiyatli qo'shildi!")
+                    messages.success(request, "✅ Bo'sh joy (variantlarsiz) savoli qo'shildi!")
                     return redirect('admin_question_list')
+
+            # ============ 3. SENTENCE ARRANGEMENT ============
+            elif question_type == 'sentence_arrangement':
+                scrambled_words = request.POST.get('sa_scrambled_words', '').strip()
+                correct_sentence = request.POST.get('sa_correct_sentence', '').strip()
+                if not scrambled_words or not correct_sentence:
+                    messages.error(request, "Barcha maydonlarni to'ldiring!")
+                else:
+                    QuizQuestion.objects.create(
+                        category=category, question_type='sentence_arrangement',
+                        scrambled_words=scrambled_words, correct_sentence=correct_sentence,
+                        points=points
+                    )
+                    messages.success(request, "✅ So'z tartibi savoli qo'shildi!")
+                    return redirect('admin_question_list')
+
+            # ============ 4. READING COMPREHENSION ============
+            elif question_type == 'reading_comprehension':
+                reading_mode = request.POST.get('reading_mode', 'new')
+                if reading_mode == 'new':
+                    reading_title = request.POST.get('reading_title', '').strip()
+                    reading_content = request.POST.get('reading_content', '').strip()
+                    if not reading_title or not reading_content:
+                        messages.error(request, "Matn sarlavhasi va mazmunini kiriting!")
+                        return redirect('admin_question_add')
+                    reading_text_obj = ReadingText.objects.create(
+                        title=reading_title, content=reading_content, category=category
+                    )
+                else:
+                    existing_text_id = request.POST.get('existing_reading_text')
+                    if not existing_text_id:
+                        messages.error(request, "Matn tanlanmagan!")
+                        return redirect('admin_question_add')
+                    reading_text_obj = ReadingText.objects.get(id=existing_text_id)
+
+                questions_saved = 0
+                for key, value in request.POST.items():
+                    if key.startswith('reading_question_'):
+                        idx = key.split('_')[-1]
+                        q_text = request.POST.get(f'reading_question_{idx}', '').strip()
+                        q_answer = request.POST.get(f'reading_answer_{idx}', '').strip()
+                        if q_text and q_answer:
+                            ReadingQuestion.objects.create(
+                                reading_text=reading_text_obj,
+                                question_text=q_text,
+                                correct_answer=q_answer,
+                                order=int(idx) if idx.isdigit() else 0
+                            )
+                            questions_saved += 1
+
+                if questions_saved == 0:
+                    messages.warning(request, "Kamida bitta savol kiriting!")
+                    return redirect('admin_question_add')
+
+                QuizQuestion.objects.create(
+                    category=category, question_type='reading_comprehension',
+                    reading_text=reading_text_obj,
+                    question_text=f"📖 {reading_text_obj.title}", correct_answer="",
+                    points=points
+                )
+                messages.success(request, f"✅ Matnli savol qo'shildi! ({questions_saved} ta savol)")
+                return redirect('admin_question_list')
+
+            # ============ 5. TRUE/FALSE ============
+            elif question_type == 'true_false':
+                question_text = request.POST.get('tf_question_text', '').strip()
+                correct_answer = request.POST.get('tf_correct_answer', '').strip()
+                if not question_text:
+                    messages.error(request, "Savol matnini kiriting!")
+                elif not correct_answer:
+                    messages.error(request, "To'g'ri javobni tanlang!")
+                else:
+                    QuizQuestion.objects.create(
+                        category=category, question_type='true_false',
+                        question_text=question_text, correct_answer=correct_answer,
+                        points=points
+                    )
+                    messages.success(request, "✅ To'g'ri/Noto'g'ri savoli qo'shildi!")
+                    return redirect('admin_question_list')
+
+            # ============ 6. MULTIPLE CHOICE ============
+            elif question_type == 'multiple_choice':
+                question_text = request.POST.get('mc_question_text', '').strip()
+                options = []
+                for key, value in request.POST.items():
+                    if key.startswith('option_') and value.strip():
+                        options.append(value.strip())
+                correct_option_index = request.POST.get('correct_option')
+                if correct_option_index and correct_option_index.isdigit():
+                    correct_option_index = int(correct_option_index)
+                else:
+                    correct_option_index = None
+
+                if not question_text:
+                    messages.error(request, "Savol matnini kiriting!")
+                elif len(options) < 2:
+                    messages.error(request, "Kamida 2 ta variant kiriting!")
+                elif correct_option_index is None or correct_option_index >= len(options):
+                    messages.error(request, "To'g'ri variantni tanlang!")
+                else:
+                    correct_answer = options[correct_option_index]
+                    QuizQuestion.objects.create(
+                        category=category, question_type='multiple_choice',
+                        question_text=question_text,
+                        correct_answer=correct_answer,
+                        scrambled_words=json.dumps(options),
+                        points=points
+                    )
+                    messages.success(request, "✅ Test varianti savoli qo'shildi!")
+                    return redirect('admin_question_list')
+
+            # ============ 7. UNDERLINE CORRECT (TO'G'RI SO'Z) - TO'G'RILANGAN ============
+            elif question_type == 'underline_correct':
+                sentence_text = request.POST.get('uc_sentence_text', '').strip()
+                correct_answer = request.POST.get('uc_correct_answer', '').strip()
+                
+                if not sentence_text:
+                    messages.error(request, "Gap matnini kiriting!")
+                elif not correct_answer:
+                    messages.error(request, "To'g'ri javobni kiriting!")
+                else:
+                    # Matndan variantlarni to'g'ri ajratish
+                    options = []
                     
+                    if '/' in sentence_text:
+                        slash_index = sentence_text.find('/')
+                        
+                        # Slash dan oldingi qismdagi oxirgi so'zni olish
+                        before_slash = sentence_text[:slash_index].strip()
+                        before_words = before_slash.split()
+                        left_option = before_words[-1] if before_words else ''
+                        
+                        # Slash dan keyingi qismdagi birinchi so'zni olish
+                        after_slash = sentence_text[slash_index + 1:].strip()
+                        after_words = after_slash.split()
+                        right_option = after_words[0] if after_words else ''
+                        
+                        # Faqat ikkala variantni qo'shish
+                        if left_option:
+                            options.append(left_option)
+                        if right_option:
+                            options.append(right_option)
+                    else:
+                        # Agar / bo'lmasa, butun matnni bitta variant sifatida saqlash
+                        options = [sentence_text]
+                    
+                    # Hech qanday variant topilmasa
+                    if not options or len(options) < 2:
+                        messages.error(request, "Matn ichida / belgisi bilan ajratilgan 2 ta variant topilmadi! Misol: 'in / by'")
+                        return redirect('admin_question_add')
+                    
+                    # To'g'ri javob variantlardan biriga tengligini tekshirish
+                    if correct_answer not in options:
+                        messages.error(request, f"To'g'ri javob '{correct_answer}' variantlar ichida emas! Variantlar: {', '.join(options)}")
+                        return redirect('admin_question_add')
+                    
+                    # scrambled_words ga variantlarni JSON sifatida saqlash
+                    scrambled_words_json = json.dumps(options)
+                    
+                    QuizQuestion.objects.create(
+                        category=category, 
+                        question_type='underline_correct',
+                        question_text=sentence_text, 
+                        correct_answer=correct_answer,
+                        scrambled_words=scrambled_words_json,
+                        points=points
+                    )
+                    messages.success(request, "✅ To'g'ri so'zni tanlash savoli qo'shildi!")
+                    return redirect('admin_question_list')
+
+            # ============ 8. MATCHING (MOSLASHTIRISH) ============
+            elif question_type == 'matching':
+                instruction = request.POST.get('matching_instruction', '').strip()
+                left_items = []
+                for key, value in request.POST.items():
+                    if key.startswith('left_item_') and value.strip():
+                        left_items.append(value.strip())
+                right_items = []
+                for key, value in request.POST.items():
+                    if key.startswith('right_item_') and value.strip():
+                        right_items.append(value.strip())
+                matches = {}
+                for key, value in request.POST.items():
+                    if key.startswith('match_answer_') and value:
+                        idx = int(key.split('_')[-1])
+                        matches[str(idx + 1)] = value
+
+                if len(left_items) < 2:
+                    messages.error(request, "Kamida 2 ta chap tomon elementi kiriting!")
+                elif len(right_items) < 2:
+                    messages.error(request, "Kamida 2 ta o'ng tomon elementi kiriting!")
+                elif len(matches) != len(left_items):
+                    messages.error(request, f"Barcha {len(left_items)} ta elementga javob tanlang!")
+                else:
+                    matching_data = {'left': left_items, 'right': right_items}
+                    QuizQuestion.objects.create(
+                        category=category, question_type='matching',
+                        question_text=instruction,
+                        correct_answer=json.dumps(matches),
+                        scrambled_words=json.dumps(matching_data),
+                        points=points
+                    )
+                    messages.success(request, "✅ Moslashtirish savoli qo'shildi!")
+                    return redirect('admin_question_list')
+
+            # ============ 9. CLOZE MULTIPLE BLANKS ============
+            elif question_type == 'cloze_multiple_blanks':
+                cloze_text = request.POST.get('cloze_question_text', '').strip()
+                blank_options_json = request.POST.get('cloze_blank_options', '{}')
+                correct_answers_json = request.POST.get('cloze_correct_answers', '{}')
+
+                try:
+                    blank_options = json.loads(blank_options_json)
+                    correct_answers = json.loads(correct_answers_json)
+                except json.JSONDecodeError:
+                    blank_options = {}
+                    correct_answers = {}
+
+                if not cloze_text:
+                    messages.error(request, "Matnni kiriting!")
+                elif not blank_options or len(blank_options) == 0:
+                    messages.error(request, "Hech qanday bo'sh joy aniqlanmadi!")
+                else:
+                    QuizQuestion.objects.create(
+                        category=category, question_type='cloze_multiple_blanks',
+                        question_text=cloze_text,
+                        correct_answer=json.dumps(correct_answers),
+                        blank_options=blank_options,
+                        scrambled_words=json.dumps(blank_options),
+                        points=points
+                    )
+                    messages.success(request, f"✅ Ko'p bo'sh joy savoli qo'shildi! ({len(blank_options)} ta)")
+                    return redirect('admin_question_list')
+
+            # ============ 10. COMPLETE THE WORDS ============
+            elif question_type == 'complete_the_words':
+                sentence_text = request.POST.get('ctw_sentence_text', '').strip()
+                correct_answer = request.POST.get('ctw_correct_answer', '').strip().lower()
+                if not sentence_text:
+                    messages.error(request, "Gap matnini kiriting!")
+                elif not correct_answer:
+                    messages.error(request, "To'g'ri javobni kiriting!")
+                else:
+                    QuizQuestion.objects.create(
+                        category=category, question_type='complete_the_words',
+                        question_text=sentence_text, correct_answer=correct_answer,
+                        points=points
+                    )
+                    messages.success(request, "✅ So'zlarni to'ldirish savoli qo'shildi!")
+                    return redirect('admin_question_list')
+
+            elif question_type == 'writing':
+                topic = request.POST.get('w_topic', '').strip()
+                if not topic:
+                    messages.error(request, "Mavzu matnini kiriting!")
+                else:
+                    QuizQuestion.objects.create(
+                        category=category, question_type='writing',
+                        question_text=topic, correct_answer='',
+                        points=points
+                    )
+                    messages.success(request, "✅ Yozma ish (Writing) savoli qo'shildi!")
+                    return redirect('admin_question_list')
+
+            else:
+                messages.error(request, f"Noto'g'ri savol turi: '{question_type}'")
+
         except Category.DoesNotExist:
             messages.error(request, "Kategoriya topilmadi!")
-    
+        except Exception as e:
+            import traceback
+            traceback.print_exc()
+            messages.error(request, f'Xatolik: {str(e)}')
+
     categories = Category.objects.all()
-    context = {
+    reading_texts = ReadingText.objects.all().select_related('category')
+    return render(request, 'groups/admin_question_add.html', {
         'categories': categories,
-    }
-    return render(request, 'groups/admin_question_add.html', context)
+        'reading_texts': reading_texts,
+    })
 
 @staff_member_required
 def admin_question_edit(request, pk):
-    """Savolni tahrirlash - maxsus sahifa"""
+    question = get_object_or_404(QuizQuestion, id=pk)
+    if request.method == 'POST':
+        question_type = request.POST.get('question_type')
+        category_id = request.POST.get('category')
+        try:
+            category = Category.objects.get(id=category_id)
+            question.category = category
+            question.question_type = question_type
+            if question_type == 'fill_blank':
+                question.question_text = request.POST.get('question_text')
+                question.correct_answer = request.POST.get('correct_answer')
+            else:
+                question.scrambled_words = request.POST.get('scrambled_words')
+                question.correct_sentence = request.POST.get('correct_sentence')
+            question.save()
+            messages.success(request, "Savol tahrirlandi!")
+            return redirect('admin_question_list')
+        except Category.DoesNotExist:
+            messages.error(request, "Kategoriya topilmadi!")
+    return render(request, 'groups/admin_question_edit.html', {
+        'question': question,
+        'categories': Category.objects.all(),
+    })
+
+
+@staff_member_required
+def admin_question_delete(request, pk):
+    question = get_object_or_404(QuizQuestion, id=pk)
+    if request.method == 'POST':
+        question.delete()
+        messages.success(request, "Savol o'chirildi!")
+        return redirect('admin_question_list')
+    return render(request, 'groups/admin_question_confirm_delete.html', {'question': question})
+
+
+@login_required
+@user_passes_test(is_admin_user)
+def reading_texts_list(request):
+    texts = ReadingText.objects.all().select_related('category').annotate(
+        questions_count=Count('reading_questions')
+    )
+    return render(request, 'groups/reading_texts_list.html', {
+        'texts': texts,
+        'total_texts': texts.count(),
+    })
+
+
+@login_required
+@user_passes_test(is_admin_user)
+def reading_text_edit(request, pk):
+    text = get_object_or_404(ReadingText, id=pk)
+    if request.method == 'POST':
+        text.title = request.POST.get('title', '').strip()
+        text.content = request.POST.get('content', '').strip()
+        category_id = request.POST.get('category')
+        if category_id:
+            text.category_id = category_id
+        text.save()
+
+        for key, value in request.POST.items():
+            if key.startswith('question_text_'):
+                q_id = key.replace('question_text_', '')
+                question_text = request.POST.get(f'question_text_{q_id}', '')
+                correct_answer = request.POST.get(f'correct_answer_{q_id}', '')
+                if question_text and correct_answer:
+                    if q_id.isdigit():
+                        ReadingQuestion.objects.filter(id=q_id).update(
+                            question_text=question_text, correct_answer=correct_answer
+                        )
+                    else:
+                        ReadingQuestion.objects.create(
+                            reading_text=text,
+                            question_text=question_text,
+                            correct_answer=correct_answer
+                        )
+
+        messages.success(request, 'Matn va savollar yangilandi!')
+        return redirect('reading_texts_list')
+
+    return render(request, 'groups/reading_text_edit.html', {
+        'text': text,
+        'categories': Category.objects.all(),
+        'questions': text.reading_questions.all().order_by('order'),
+    })
+
+
+# Eski URL'lar uchun (slash boshida)
+@login_required
+@csrf_exempt
+def check_audio_play_old(request):
+    return check_audio_play_api(request)
+
+
+@login_required
+@csrf_exempt
+def record_audio_play_old(request):
+    return record_audio_play_api(request)
+
+
+
+
+
+
+
+
+# models.py ga qo'shimcha maydon (agar bo'lmasa)
+# ExamControl modeliga is_paused qo'shing:
+
+
+
+
+
+@login_required
+@user_passes_test(is_admin_user)
+@csrf_exempt
+@require_http_methods(["POST"])
+def pause_exam_api(request):
+    """Testni vaqtincha to'xtatish (pauza)"""
+    try:
+        data = json.loads(request.body)
+        group_id = data.get('group_id')
+        if not group_id:
+            return JsonResponse({'success': False, 'message': 'group_id kerak'})
+
+        group = Group.objects.get(id=group_id)
+        config, _ = GroupExamConfig.objects.get_or_create(group=group)
+        now = timezone.now()
+        
+        exam_control, _ = ExamControl.objects.get_or_create(group=group)
+        
+        # Agar test aktiv bo'lmasa
+        if not exam_control.is_active:
+            return JsonResponse({'success': False, 'message': 'Test aktiv emas!'})
+        
+        # O'tgan vaqtni hisoblash (started_at dan hozirgacha)
+        if exam_control.started_at:
+            elapsed = (now - exam_control.started_at).total_seconds()
+            exam_control.elapsed_time = int(elapsed)
+        else:
+            exam_control.elapsed_time = 0
+        
+        exam_control.is_active = False
+        exam_control.is_paused = True
+        exam_control.paused_at = now
+        exam_control.save()
+        
+        # Cache ni yangilash
+        cache.set(f'exam_active_{group_id}', False, timeout=86400)
+        cache.set(f'exam_paused_{group_id}', True, timeout=86400)
+        cache.set(f'exam_elapsed_time_{group_id}', exam_control.elapsed_time, timeout=86400)
+        
+        # QuizSession ni pauzaga o'tkazish
+        quiz_session = QuizSession.objects.filter(group=group, is_active=True).first()
+        if quiz_session:
+            quiz_session.is_active = False
+            quiz_session.save()
+        
+        return JsonResponse({
+            'success': True,
+            'message': 'Test pauzaga qo\'yildi!',
+            'is_active': False,
+            'is_paused': True,
+            'elapsed_time': exam_control.elapsed_time
+        })
+        
+    except Exception as e:
+        return JsonResponse({'success': False, 'message': str(e)})
+
+
+@login_required
+@user_passes_test(is_admin_user)
+@csrf_exempt
+@require_http_methods(["POST"])
+def resume_exam_api(request):
+    """Pauzadagi testni qayta boshlash"""
+    try:
+        data = json.loads(request.body)
+        group_id = data.get('group_id')
+        if not group_id:
+            return JsonResponse({'success': False, 'message': 'group_id kerak'})
+
+        group = Group.objects.get(id=group_id)
+        config, _ = GroupExamConfig.objects.get_or_create(group=group)
+        now = timezone.now()
+        
+        exam_control, _ = ExamControl.objects.get_or_create(group=group)
+        
+        # Agar test pauzada bo'lmasa
+        if not exam_control.is_paused:
+            return JsonResponse({'success': False, 'message': 'Test pauzada emas!'})
+        
+        total_time = config.time_limit * 60
+        elapsed_time = exam_control.elapsed_time
+        
+        # Yangi start vaqtini hisoblash
+        new_started_at = now - timezone.timedelta(seconds=elapsed_time)
+        
+        exam_control.is_active = True
+        exam_control.is_paused = False
+        exam_control.started_at = new_started_at
+        exam_control.paused_at = None
+        exam_control.save()
+        
+        # Cache ni yangilash
+        cache.set(f'exam_active_{group_id}', True, timeout=86400)
+        cache.delete(f'exam_paused_{group_id}')
+        cache.set(f'exam_start_time_{group_id}', new_started_at.isoformat(), timeout=86400)
+        
+        # Tugash vaqtini hisoblash
+        if config.time_limit > 0:
+            end_time = new_started_at + timezone.timedelta(seconds=total_time)
+            cache.set(f'exam_end_time_{group_id}', end_time.isoformat(), timeout=86400)
+        
+        # QuizSession ni qayta aktivlashtirish
+        quiz_session = QuizSession.objects.filter(group=group).order_by('-started_at').first()
+        if quiz_session:
+            quiz_session.is_active = True
+            quiz_session.save()
+        else:
+            quiz_session = QuizSession.objects.create(
+                group=group, is_active=True, started_at=now, created_by=request.user
+            )
+        
+        return JsonResponse({
+            'success': True,
+            'message': 'Test qayta boshlandi!',
+            'is_active': True,
+            'is_paused': False,
+            'elapsed_time': elapsed_time,
+            'should_reload': True
+        })
+        
+    except Exception as e:
+        return JsonResponse({'success': False, 'message': str(e)})
+
+
+@login_required
+@csrf_exempt
+@require_http_methods(["POST"])
+def quiz_check_status(request):
+    """Test holatini tekshirish - studentlar uchun"""
+    try:
+        data = json.loads(request.body)
+        group_id = data.get('group_id')
+        if not group_id:
+            return JsonResponse({'success': False, 'error': 'group_id kerak'})
+
+        group = Group.objects.get(id=group_id)
+        config, _ = GroupExamConfig.objects.get_or_create(group=group)
+        
+        # Cache dan tezroq olish
+        is_active = cache.get(f'exam_active_{group_id}')
+        is_paused = cache.get(f'exam_paused_{group_id}')
+        start_time_str = cache.get(f'exam_start_time_{group_id}')
+        
+        # Agar cache da bo'lmasa, database dan olish
+        if is_active is None:
+            try:
+                exam_control = ExamControl.objects.get(group_id=group_id)
+                is_active = exam_control.is_active
+                is_paused = exam_control.is_paused
+                start_time_str = exam_control.started_at.isoformat() if exam_control.started_at else None
+                elapsed_time = exam_control.elapsed_time
+            except ExamControl.DoesNotExist:
+                is_active = False
+                is_paused = False
+                elapsed_time = 0
+        else:
+            # Cache da bo'lsa, elapsed_time ni ham olish
+            elapsed_time = cache.get(f'exam_elapsed_time_{group_id}', 0)
+        
+        remaining_time = None
+        total_time = config.time_limit * 60 if config.time_limit > 0 else 0
+        
+        if is_active and start_time_str and total_time > 0:
+            # Aktiv test - o'tgan vaqtni hisoblash
+            try:
+                start_time = datetime.fromisoformat(start_time_str)
+                if timezone.is_naive(start_time):
+                    start_time = timezone.make_aware(start_time)
+                now = timezone.now()
+                elapsed = (now - start_time).total_seconds()
+                remaining_time = max(0, int(total_time - elapsed))
+            except:
+                remaining_time = total_time
+                
+        elif is_paused and total_time > 0:
+            # Pauza holati
+            remaining_time = max(0, total_time - elapsed_time)
+            
+        elif total_time > 0:
+            remaining_time = total_time
+        
+        return JsonResponse({
+            'success': True,
+            'is_active': is_active,
+            'is_paused': is_paused,
+            'remaining_time': remaining_time,
+            'elapsed_time': elapsed_time
+        })
+
+    except Exception as e:
+        return JsonResponse({'success': False, 'error': str(e), 'is_active': False, 'is_paused': False}, status=500)
+
+
+
+
+
+
+
+
+
+
+
+
+@login_required
+@user_passes_test(is_admin_user)
+@csrf_exempt
+@require_http_methods(["POST"])
+def resume_exam_api(request):
+    """Pauzadagi testni qayta boshlash - studentlar uchun avtomatik reload"""
+    try:
+        data = json.loads(request.body)
+        group_id = data.get('group_id')
+        if not group_id:
+            return JsonResponse({'success': False, 'message': 'group_id kerak'})
+
+        group = Group.objects.get(id=group_id)
+        config, _ = GroupExamConfig.objects.get_or_create(group=group)
+        now = timezone.now()
+        
+        exam_control, _ = ExamControl.objects.get_or_create(group=group)
+        
+        if not exam_control.is_paused:
+            return JsonResponse({'success': False, 'message': 'Test pauzada emas!'})
+        
+        total_time = config.time_limit * 60
+        elapsed_time = exam_control.elapsed_time
+        remaining_time = max(0, total_time - elapsed_time)
+        
+        new_started_at = now - timezone.timedelta(seconds=elapsed_time)
+        
+        exam_control.is_active = True
+        exam_control.is_paused = False
+        exam_control.started_at = new_started_at
+        exam_control.paused_at = None
+        exam_control.save()
+        
+        # Cache ni yangilash
+        cache.set(f'exam_active_{group_id}', True, timeout=86400)
+        cache.delete(f'exam_paused_{group_id}')
+        cache.set(f'exam_start_time_{group_id}', new_started_at.isoformat(), timeout=86400)
+        
+        # QuizSession ni qayta aktivlashtirish
+        quiz_session = QuizSession.objects.filter(group=group).order_by('-started_at').first()
+        if quiz_session:
+            quiz_session.is_active = True
+            quiz_session.save()
+        else:
+            quiz_session = QuizSession.objects.create(
+                group=group, is_active=True, started_at=now, created_by=request.user
+            )
+        
+        remaining_min = remaining_time // 60
+        remaining_sec = remaining_time % 60
+        
+        return JsonResponse({
+            'success': True,
+            'message': f'Test qayta boshlandi! Qolgan vaqt: {remaining_min}:{remaining_sec:02d}',
+            'is_active': True,
+            'is_paused': False,
+            'remaining_time': remaining_time,
+            'elapsed_time': elapsed_time,
+            'should_reload': True  # MUHIM: Student sahifasini reload qilish kerak
+        })
+        
+    except Exception as e:
+        return JsonResponse({'success': False, 'message': str(e)})
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+def format_time(seconds):
+    """Vaqtni formatlash"""
+    minutes = seconds // 60
+    secs = seconds % 60
+    return f"{minutes}:{secs:02d}"
+
+@login_required
+@user_passes_test(is_admin_user)
+@csrf_exempt
+@require_http_methods(["POST"])
+def resume_exam_api(request):
+    """Pauzadagi testni qayta boshlash - vaqtni to'g'ri hisoblash"""
+    try:
+        data = json.loads(request.body)
+        group_id = data.get('group_id')
+        if not group_id:
+            return JsonResponse({'success': False, 'message': 'group_id kerak'})
+
+        group = Group.objects.get(id=group_id)
+        config, _ = GroupExamConfig.objects.get_or_create(group=group)
+        now = timezone.now()
+        
+        exam_control, _ = ExamControl.objects.get_or_create(group=group)
+        
+        # Agar test pauzada bo'lmasa
+        if not exam_control.is_paused:
+            return JsonResponse({'success': False, 'message': 'Test pauzada emas!'})
+        
+        total_time = config.time_limit * 60  # Jami vaqt (sekund)
+        elapsed_time = exam_control.elapsed_time  # O'tgan vaqt (sekund)
+        remaining_time = max(0, total_time - elapsed_time)  # Qolgan vaqt
+        
+        # MUHIM: Yangi start vaqtini hisoblash - o'tgan vaqtni hisobga olgan holda
+        # Test boshlangan vaqt = Hozirgi vaqt - o'tgan vaqt
+        new_started_at = now - timezone.timedelta(seconds=elapsed_time)
+        
+        exam_control.is_active = True
+        exam_control.is_paused = False
+        exam_control.started_at = new_started_at
+        exam_control.paused_at = None
+        # elapsed_time ni o'zgartirmaymiz! (o'tgan vaqt saqlanib qoladi)
+        exam_control.save()
+        
+        # Cache ni yangilash
+        cache.set(f'exam_active_{group_id}', True, timeout=86400)
+        cache.delete(f'exam_paused_{group_id}')
+        cache.set(f'exam_start_time_{group_id}', new_started_at.isoformat(), timeout=86400)
+        
+        # Tugash vaqtini hisoblash
+        if config.time_limit > 0:
+            end_time = new_started_at + timezone.timedelta(seconds=total_time)
+            cache.set(f'exam_end_time_{group_id}', end_time.isoformat(), timeout=86400)
+        
+        # QuizSession ni qayta aktivlashtirish
+        quiz_session = QuizSession.objects.filter(group=group).order_by('-started_at').first()
+        if quiz_session:
+            quiz_session.is_active = True
+            quiz_session.save()
+        else:
+            quiz_session = QuizSession.objects.create(
+                group=group, is_active=True, started_at=now, created_by=request.user
+            )
+        
+        # Qolgan vaqtni formatlash
+        remaining_min = remaining_time // 60
+        remaining_sec = remaining_time % 60
+        
+        return JsonResponse({
+            'success': True,
+            'message': f'Test qayta boshlandi! Qolgan vaqt: {remaining_min}:{remaining_sec:02d}',
+            'is_active': True,
+            'is_paused': False,
+            'remaining_time': remaining_time,
+            'elapsed_time': elapsed_time
+        })
+        
+    except Exception as e:
+        return JsonResponse({'success': False, 'message': str(e)})
+
+
+@login_required
+@csrf_exempt
+@require_http_methods(["POST"])
+def get_remaining_time_api(request):
+    """Qolgan vaqtni olish (student uchun)"""
+    try:
+        data = json.loads(request.body)
+        group_id = data.get('group_id')
+        if not group_id:
+            return JsonResponse({'success': False, 'message': 'group_id kerak'})
+
+        group = Group.objects.get(id=group_id)
+        config, _ = GroupExamConfig.objects.get_or_create(group=group)
+        
+        if config.time_limit <= 0:
+            return JsonResponse({'success': True, 'remaining_time': None})
+        
+        try:
+            exam_control = ExamControl.objects.get(group_id=group_id)
+            total_time = config.time_limit * 60
+            
+            if exam_control.is_paused:
+                # Pauzada - elapsed_time dan hisoblash
+                remaining_time = max(0, total_time - exam_control.elapsed_time)
+            elif exam_control.is_active and exam_control.started_at:
+                # Aktiv - started_at dan hisoblash
+                now = timezone.now()
+                elapsed = (now - exam_control.started_at).total_seconds()
+                remaining_time = max(0, int(total_time - elapsed))
+            else:
+                remaining_time = total_time
+                
+        except ExamControl.DoesNotExist:
+            remaining_time = config.time_limit * 60
+        
+        return JsonResponse({
+            'success': True,
+            'remaining_time': remaining_time,
+            'is_paused': exam_control.is_paused if 'exam_control' in locals() else False
+        })
+        
+    except Exception as e:
+        return JsonResponse({'success': False, 'message': str(e)})
+
+
+
+
+
+def check_matching_answer(question, answers, total_score, total_possible, question_results, qid):
+    """Matching (Moslashtirish) savolini tekshirish va ball hisoblash"""
+    correct_answers = question.get_matching_correct_answers()
+    blanks_total = len(correct_answers)
+    blanks_correct = 0
+    blank_scores = {}
+    pts_per_blank = round(question.points / blanks_total, 2)
+    
+    # Chap va o'ng tomon elementlarini olish
+    left_items = question.get_matching_left_items()
+    right_items = question.get_matching_right_items()
+    
+    # Harflarni matnga aylantirish uchun mapping
+    letter_to_text = {}
+    text_to_letter = {}
+    for idx, item in enumerate(right_items):
+        letter = chr(65 + idx)  # A, B, C, D...
+        letter_to_text[letter] = item.strip().lower()
+        letter_to_text[letter.lower()] = item.strip().lower()
+        text_to_letter[item.strip().lower()] = letter
+    
+    for key, correct_val in correct_answers.items():
+        # Student javobini topish
+        user_val = ''
+        
+        # 1-usul: q_123_1 formatida
+        field_name = f'q_{question.id}_{key}'
+        if field_name in answers:
+            user_val = answers[field_name]
+        
+        # 2-usul: q_123 formatida dict sifatida
+        elif f'q_{question.id}' in answers and isinstance(answers[f'q_{question.id}'], dict):
+            user_val = answers[f'q_{question.id}'].get(str(key), '')
+            if not user_val:
+                user_val = answers[f'q_{question.id}'].get(key, '')
+        
+        # 3-usul: to'g'ridan to'g'ri q_123_key formatida
+        else:
+            for ans_key, ans_val in answers.items():
+                if str(question.id) in ans_key and str(key) in ans_key:
+                    user_val = ans_val
+                    break
+        
+        # Javobni tozalash
+        if user_val:
+            user_val = str(user_val).strip()
+        
+        correct_val_clean = str(correct_val).strip()
+        
+        # TO'G'RI JAVOBNI TEKSHIRISH
+        is_correct = False
+        
+        # 1. To'g'ridan to'g'ri tenglik
+        if user_val and user_val.lower() == correct_val_clean.lower():
+            is_correct = True
+        
+        # 2. Student harf yozgan, to'g'ri javob harf
+        elif user_val and len(user_val) == 1 and user_val.isalpha() and len(correct_val_clean) == 1 and correct_val_clean.isalpha():
+            if user_val.upper() == correct_val_clean.upper():
+                is_correct = True
+        
+        # 3. Student matn yozgan, to'g'ri javob harf
+        elif user_val and len(correct_val_clean) == 1 and correct_val_clean.isalpha():
+            expected_text = letter_to_text.get(correct_val_clean.upper(), '')
+            if expected_text and user_val.lower() == expected_text:
+                is_correct = True
+        
+        # 4. Student harf yozgan, to'g'ri javob matn
+        elif user_val and len(user_val) == 1 and user_val.isalpha():
+            expected_letter = text_to_letter.get(correct_val_clean.lower(), '')
+            if expected_letter and user_val.upper() == expected_letter:
+                is_correct = True
+        
+        # 5. Student matn yozgan, to'g'ri javob matn
+        elif user_val and correct_val_clean:
+            try:
+                idx = int(key) - 1
+                if 0 <= idx < len(left_items):
+                    if len(correct_val_clean) == 1 and correct_val_clean.isalpha():
+                        right_idx = ord(correct_val_clean.upper()) - 65
+                        if 0 <= right_idx < len(right_items):
+                            correct_text = right_items[right_idx].strip().lower()
+                            if user_val.lower() == correct_text:
+                                is_correct = True
+                    else:
+                        if user_val.lower() == correct_val_clean.lower():
+                            is_correct = True
+            except:
+                pass
+        
+        # 6. To'g'ri javob variantlar ichida bo'lsa (| bilan ajratilgan)
+        if not is_correct and user_val and '|' in correct_val_clean:
+            variants = [v.strip().lower() for v in correct_val_clean.split('|')]
+            if user_val.lower() in variants:
+                is_correct = True
+        
+        # 7. SELECT dan kelgan value (masalan: "A. olma" formatida)
+        if not is_correct and user_val and '.' in user_val:
+            parts = user_val.split('.')
+            if len(parts) == 2:
+                letter_part = parts[0].strip()
+                text_part = parts[1].strip()
+                if letter_part.isalpha() and len(letter_part) == 1:
+                    if letter_part.upper() == correct_val_clean.upper():
+                        is_correct = True
+                    elif text_part.lower() == correct_val_clean.lower():
+                        is_correct = True
+        
+        if is_correct:
+            blanks_correct += 1
+            total_score += pts_per_blank
+        
+        blank_scores[key] = {
+            'user_answer': user_val if user_val else 'Javob berilmagan',
+            'is_correct': is_correct,
+            'correct_answer': correct_val_clean
+        }
+    
+    total_possible += question.points
+    question_results[qid] = {
+        'type': 'matching',
+        'blanks_correct': blanks_correct,
+        'blanks_total': blanks_total,
+        'blanks': blank_scores
+    }
+    
+    return total_score, total_possible, question_results
+
+
+
+
+from django.contrib.admin.views.decorators import staff_member_required
+from django.shortcuts import render, get_object_or_404, redirect
+from django.contrib import messages
+from django.db.models import Q
+import json
+
+@login_required
+@user_passes_test(is_admin_user)
+def admin_writing_review(request, group_id):
+    group = get_object_or_404(Group, id=group_id)
+    results = QuizResult.objects.filter(
+        quiz_session__group=group
+    ).order_by('-submitted_at')
+
+    writing_entries = []
+    for result in results:
+        if not result.answers:
+            continue
+        for qid_str, ans_data in result.answers.items():
+            if isinstance(ans_data, dict) and ans_data.get('type') == 'writing':
+                try:
+                    question = QuizQuestion.objects.get(id=int(qid_str))
+                except (QuizQuestion.DoesNotExist, ValueError):
+                    continue
+                writing_entries.append({
+                    'result_id': result.id,
+                    'question_id': question.id,
+                    'student_name': result.student.full_name,
+                    'topic': question.question_text,
+                    'answer': ans_data.get('user_answer', ''),
+                    'graded': ans_data.get('graded', False),
+                    'earned_points': ans_data.get('earned_points', 0),
+                    'max_points': question.points,
+                    'submitted_at': result.submitted_at,
+                })
+
+    return render(request, 'groups/admin_writing_review.html', {
+        'group': group,
+        'writing_entries': writing_entries,
+    })
+
+@login_required
+@user_passes_test(is_admin_user)
+def admin_writing_grade_api(request, result_id, question_id):
+    if request.method != 'POST':
+        return JsonResponse({'success': False, 'message': 'POST kerak'})
+    try:
+        data = json.loads(request.body)
+        earned_points = float(data.get('earned_points', 0))
+        result = get_object_or_404(QuizResult, id=result_id)
+        qid_str = str(question_id)
+
+        if qid_str not in result.answers or not isinstance(result.answers[qid_str], dict):
+            return JsonResponse({'success': False, 'message': 'Bu savol topilmadi'})
+
+        ans_data = result.answers[qid_str]
+        if ans_data.get('type') != 'writing':
+            return JsonResponse({'success': False, 'message': 'Bu writing savoli emas'})
+
+        max_points = int(ans_data.get('max_points', 0))
+        if max_points == 0:
+            try:
+                question = QuizQuestion.objects.get(id=question_id)
+                max_points = question.points
+            except QuizQuestion.DoesNotExist:
+                return JsonResponse({'success': False, 'message': 'Savol topilmadi'})
+
+        earned_points = max(0, min(earned_points, max_points))
+
+        ans_data['earned_points'] = earned_points
+        ans_data['graded'] = True
+        ans_data['is_correct'] = earned_points > 0
+
+        # Recalculate score
+        total_score = 0
+        total_possible = 0
+        session = result.quiz_session
+        if session and session.group:
+            questions = QuizQuestion.objects.filter(
+                category__in=GroupCategory.objects.filter(
+                    group=session.group, is_active=True
+                ).values('category')
+            )
+        else:
+            questions = QuizQuestion.objects.none()
+
+        for q in questions:
+            sqid = str(q.id)
+            total_possible += q.points
+            if sqid in result.answers:
+                a = result.answers[sqid]
+                if isinstance(a, dict):
+                    if a.get('type') == 'writing':
+                        total_score += a.get('earned_points', 0)
+                    elif 'blanks' in a:
+                        pts_per = round(q.points / max(a.get('blanks_total', 1), 1), 2)
+                        total_score += a.get('blanks_correct', 0) * pts_per
+                    elif a.get('is_correct'):
+                        total_score += q.points
+
+        result.score = round((total_score / total_possible) * 100, 1) if total_possible > 0 else 0
+        result.answers[qid_str] = ans_data
+        result.save()
+
+        return JsonResponse({
+            'success': True,
+            'score': result.score,
+            'total_possible': total_possible,
+            'earned': earned_points,
+            'total_score': round(total_score, 1),
+        })
+
+    except Exception as e:
+        return JsonResponse({'success': False, 'message': str(e)})
+
+
+@staff_member_required
+def admin_question_list(request):
+    questions = QuizQuestion.objects.all().select_related('category', 'reading_text').order_by('-created_at')
+    search = request.GET.get('search', '')
+    if search:
+        questions = questions.filter(
+            Q(question_text__icontains=search) |
+            Q(correct_answer__icontains=search) |
+            Q(correct_sentence__icontains=search)
+        )
+    question_type = request.GET.get('type', '')
+    if question_type:
+        questions = questions.filter(question_type=question_type)
+    category_id = request.GET.get('category', '')
+    if category_id:
+        questions = questions.filter(category_id=category_id)
+
+    return render(request, 'groups/admin_question_list.html', {
+        'questions': questions,
+        'categories': Category.objects.all(),
+        'search': search,
+        'selected_type': question_type,
+        'selected_category': category_id,
+    })
+
+
+@staff_member_required
+def admin_question_delete(request, pk):
+    question = get_object_or_404(QuizQuestion, id=pk)
+    if request.method == 'POST':
+        try:
+            question_title = str(question)
+            question.delete()
+            messages.success(request, f'✅ "{question_title}" savoli o\'chirildi!')
+        except Exception as e:
+            messages.error(request, f'Xatolik: {str(e)}')
+        return redirect('admin_question_list')
+    return redirect('admin_question_list')
+
+
+from django.views.decorators.csrf import csrf_exempt
+from django.http import JsonResponse
+
+@login_required
+@user_passes_test(is_admin_user)
+@csrf_exempt
+def admin_question_delete_api(request, pk):
+    """Savolni o'chirish API (AJAX uchun)"""
+    if request.method != 'POST':
+        return JsonResponse({'success': False, 'message': 'Faqat POST so\'rov'})
+    
+    try:
+        question = get_object_or_404(QuizQuestion, id=pk)
+        question_title = str(question)
+        question.delete()
+        return JsonResponse({
+            'success': True, 
+            'message': f'✅ "{question_title}" savoli o\'chirildi!'
+        })
+    except Exception as e:
+        return JsonResponse({'success': False, 'message': str(e)})
+
+
+
+@staff_member_required
+def admin_question_edit(request, pk):
+    """Savolni tahrirlash - barcha savol turlari uchun"""
     question = get_object_or_404(QuizQuestion, id=pk)
     
     if request.method == 'POST':
-        question_type = request.POST.get('question_type')
+        question_type = question.question_type
         category_id = request.POST.get('category')
         
         try:
             category = Category.objects.get(id=category_id)
             question.category = category
-            question.question_type = question_type
+            question.points = int(request.POST.get('points', question.points))
             
+            # ============ 1. FILL BLANK (Word Bank) ============
             if question_type == 'fill_blank':
-                question.question_text = request.POST.get('question_text')
-                question.correct_answer = request.POST.get('correct_answer')
-                question.scrambled_words = None
-                question.correct_sentence = None
-            else:
-                question.scrambled_words = request.POST.get('scrambled_words')
-                question.correct_sentence = request.POST.get('correct_sentence')
-                question.question_text = None
-                question.correct_answer = None
-            
-            question.save()
-            messages.success(request, "Savol tahrirlandi!")
-            return redirect('admin_question_list')
-            
-        except Category.DoesNotExist:
-            messages.error(request, "Kategoriya topilmadi!")
-    
-    categories = Category.objects.all()
-    context = {
-        'question': question,
-        'categories': categories,
-    }
-    return render(request, 'groups/admin_question_edit.html', context)
-
-@staff_member_required
-def admin_question_delete(request, pk):
-    """Savolni o'chirish - maxsus sahifa"""
-    question = get_object_or_404(QuizQuestion, id=pk)
-    
-    if request.method == 'POST':
-        question.delete()
-        messages.success(request, "Savol o'chirildi!")
-        return redirect('admin_question_list')
-    
-    return render(request, 'groups/admin_question_confirm_delete.html', {'question': question})
-@staff_member_required
-def admin_question_add(request):
-    """Yangi savol qo'shish"""
-    if request.method == 'POST':
-        question_type = request.POST.get('question_type')
-        category_id = request.POST.get('category')
-        
-        try:
-            category = Category.objects.get(id=category_id)
-            
-            if question_type == 'fill_blank':
-                question_text = request.POST.get('question_text')
-                correct_answer = request.POST.get('correct_answer')
+                question.question_text = request.POST.get('fb_question_text', '').strip()
+                question.correct_answer = request.POST.get('fb_correct_answer', '').strip()
                 
-                if not question_text or not correct_answer:
+                if not question.question_text or not question.correct_answer:
                     messages.error(request, "Savol matni va to'g'ri javobni kiriting!")
-                else:
-                    QuizQuestion.objects.create(
-                        category=category,
-                        question_type='fill_blank',
-                        question_text=question_text,
-                        correct_answer=correct_answer
-                    )
-                    messages.success(request, "Savol muvaffaqiyatli qo'shildi!")
-                    return redirect('admin_question_list')
-                    
-            elif question_type == 'sentence_arrangement':
-                scrambled_words = request.POST.get('scrambled_words')
-                correct_sentence = request.POST.get('correct_sentence')
+                    return redirect('admin_question_edit', pk=question.id)
                 
-                if not scrambled_words or not correct_sentence:
-                    messages.error(request, "So'zlar va to'g'ri gapni kiriting!")
+                question.save()
+                messages.success(request, "✅ Bo'sh joy (Word Bank) savoli tahrirlandi!")
+                return redirect('admin_question_list')
+            
+            # ============ 2. FILL BLANK NO WORD ============
+            elif question_type == 'fill_blank_no_word':
+                question.question_text = request.POST.get('fbnw_question_text', '').strip()
+                question.correct_answer = request.POST.get('fbnw_correct_answer', '').strip()
+                
+                if not question.question_text or not question.correct_answer:
+                    messages.error(request, "Savol matni va to'g'ri javobni kiriting!")
+                    return redirect('admin_question_edit', pk=question.id)
+                
+                question.save()
+                messages.success(request, "✅ Bo'sh joy (variantlarsiz) savoli tahrirlandi!")
+                return redirect('admin_question_list')
+            
+            # ============ 3. SENTENCE ARRANGEMENT ============
+            elif question_type == 'sentence_arrangement':
+                question.scrambled_words = request.POST.get('sa_scrambled_words', '').strip()
+                question.correct_sentence = request.POST.get('sa_correct_sentence', '').strip()
+                
+                if not question.scrambled_words or not question.correct_sentence:
+                    messages.error(request, "Barcha maydonlarni to'ldiring!")
+                    return redirect('admin_question_edit', pk=question.id)
+                
+                question.save()
+                messages.success(request, "✅ So'z tartibi savoli tahrirlandi!")
+                return redirect('admin_question_list')
+            
+            # ============ 4. READING COMPREHENSION ============
+            elif question_type == 'reading_comprehension':
+                if question.reading_text:
+                    return redirect('reading_text_edit', pk=question.reading_text.id)
+                messages.error(request, "Matn topilmadi!")
+                return redirect('admin_question_edit', pk=question.id)
+            
+            # ============ 5. TRUE/FALSE ============
+            elif question_type == 'true_false':
+                question.question_text = request.POST.get('tf_question_text', '').strip()
+                question.correct_answer = request.POST.get('tf_correct_answer', '').strip()
+                
+                if not question.question_text:
+                    messages.error(request, "Savol matnini kiriting!")
+                    return redirect('admin_question_edit', pk=question.id)
+                if not question.correct_answer:
+                    messages.error(request, "To'g'ri javobni tanlang!")
+                    return redirect('admin_question_edit', pk=question.id)
+                
+                question.save()
+                messages.success(request, "✅ To'g'ri/Noto'g'ri savoli tahrirlandi!")
+                return redirect('admin_question_list')
+            
+            # ============ 6. MULTIPLE CHOICE ============
+            elif question_type == 'multiple_choice':
+                question.question_text = request.POST.get('mc_question_text', '').strip()
+                options = []
+                
+                for key, value in request.POST.items():
+                    if key.startswith('option_') and value.strip():
+                        options.append(value.strip())
+                
+                correct_option_index = request.POST.get('correct_option')
+                if correct_option_index and correct_option_index.isdigit():
+                    correct_option_index = int(correct_option_index)
                 else:
-                    QuizQuestion.objects.create(
-                        category=category,
-                        question_type='sentence_arrangement',
-                        scrambled_words=scrambled_words,
-                        correct_sentence=correct_sentence
-                    )
-                    messages.success(request, "Savol muvaffaqiyatli qo'shildi!")
+                    correct_option_index = None
+                
+                if not question.question_text:
+                    messages.error(request, "Savol matnini kiriting!")
+                elif len(options) < 2:
+                    messages.error(request, "Kamida 2 ta variant kiriting!")
+                elif correct_option_index is None or correct_option_index >= len(options):
+                    messages.error(request, "To'g'ri variantni tanlang!")
+                else:
+                    question.correct_answer = options[correct_option_index]
+                    question.scrambled_words = json.dumps(options)
+                    question.save()
+                    messages.success(request, "✅ Test varianti savoli tahrirlandi!")
                     return redirect('admin_question_list')
+            
+            # ============ 7. UNDERLINE CORRECT ============
+            elif question_type == 'underline_correct':
+                sentence_text = request.POST.get('uc_sentence_text', '').strip()
+                correct_answer = request.POST.get('uc_correct_answer', '').strip()
+                
+                if not sentence_text:
+                    messages.error(request, "Gap matnini kiriting!")
+                elif not correct_answer:
+                    messages.error(request, "To'g'ri javobni kiriting!")
+                else:
+                    options = []
+                    if '/' in sentence_text:
+                        parts = sentence_text.split('/')
+                        for part in parts:
+                            cleaned = part.strip()
+                            if cleaned:
+                                options.append(cleaned)
+                    else:
+                        options = [sentence_text]
                     
-        except Category.DoesNotExist:
-            messages.error(request, "Kategoriya topilmadi!")
-    
-    categories = Category.objects.all()
-    context = {
-        'categories': categories,
-    }
-    return render(request, 'groups/admin_question_add.html', context)
-
-@staff_member_required
-def admin_question_edit(request, pk):
-    """Savolni tahrirlash"""
-    question = get_object_or_404(QuizQuestion, id=pk)
-    
-    if request.method == 'POST':
-        question_type = request.POST.get('question_type')
-        category_id = request.POST.get('category')
-        
-        try:
-            category = Category.objects.get(id=category_id)
-            question.category = category
-            question.question_type = question_type
+                    question.question_text = sentence_text
+                    question.correct_answer = correct_answer
+                    question.scrambled_words = json.dumps(options)
+                    question.save()
+                    messages.success(request, "✅ To'g'ri so'zni tanlash savoli tahrirlandi!")
+                    return redirect('admin_question_list')
             
-            if question_type == 'fill_blank':
-                question.question_text = request.POST.get('question_text')
-                question.correct_answer = request.POST.get('correct_answer')
-                question.scrambled_words = None
-                question.correct_sentence = None
+            # ============ 8. MATCHING ============
+            elif question_type == 'matching':
+                instruction = request.POST.get('matching_instruction', '').strip()
+                left_items = []
+                right_items = []
+                matches = {}
+                
+                for key, value in request.POST.items():
+                    if key.startswith('left_item_') and value.strip():
+                        left_items.append(value.strip())
+                
+                for key, value in request.POST.items():
+                    if key.startswith('right_item_') and value.strip():
+                        right_items.append(value.strip())
+                
+                for key, value in request.POST.items():
+                    if key.startswith('match_answer_') and value:
+                        idx = int(key.split('_')[-1])
+                        matches[str(idx + 1)] = value
+                
+                if len(left_items) < 2:
+                    messages.error(request, "Kamida 2 ta chap tomon elementi kiriting!")
+                elif len(right_items) < 2:
+                    messages.error(request, "Kamida 2 ta o'ng tomon elementi kiriting!")
+                elif len(matches) != len(left_items):
+                    messages.error(request, f"Barcha {len(left_items)} ta elementga javob tanlang!")
+                else:
+                    matching_data = {'left': left_items, 'right': right_items}
+                    question.question_text = instruction
+                    question.correct_answer = json.dumps(matches)
+                    question.scrambled_words = json.dumps(matching_data)
+                    question.save()
+                    messages.success(request, "✅ Moslashtirish savoli tahrirlandi!")
+                    return redirect('admin_question_list')
+            
+            # ============ 9. CLOZE MULTIPLE BLANKS ============
+            elif question_type == 'cloze_multiple_blanks':
+                cloze_text = request.POST.get('cloze_question_text', '').strip()
+                blank_options_json = request.POST.get('cloze_blank_options', '{}')
+                correct_answers_json = request.POST.get('cloze_correct_answers', '{}')
+                
+                try:
+                    blank_options = json.loads(blank_options_json)
+                    correct_answers = json.loads(correct_answers_json)
+                except json.JSONDecodeError:
+                    blank_options = {}
+                    correct_answers = {}
+                
+                if not cloze_text:
+                    messages.error(request, "Matnni kiriting!")
+                elif not blank_options or len(blank_options) == 0:
+                    messages.error(request, "Hech qanday bo'sh joy aniqlanmadi!")
+                else:
+                    question.question_text = cloze_text
+                    question.correct_answer = json.dumps(correct_answers)
+                    question.blank_options = blank_options
+                    question.scrambled_words = json.dumps(blank_options)
+                    question.save()
+                    messages.success(request, "✅ Ko'p bo'sh joy savoli tahrirlandi!")
+                    return redirect('admin_question_list')
+            
+            # ============ 10. COMPLETE THE WORDS ============
+            elif question_type == 'complete_the_words':
+                sentence_text = request.POST.get('ctw_sentence_text', '').strip()
+                correct_answer = request.POST.get('ctw_correct_answer', '').strip().lower()
+                
+                if not sentence_text:
+                    messages.error(request, "Gap matnini kiriting!")
+                elif not correct_answer:
+                    messages.error(request, "To'g'ri javobni kiriting!")
+                else:
+                    question.question_text = sentence_text
+                    question.correct_answer = correct_answer
+                    question.save()
+                    messages.success(request, "✅ So'zlarni to'ldirish savoli tahrirlandi!")
+                    return redirect('admin_question_list')
+            
+            elif question_type == 'writing':
+                topic = request.POST.get('w_topic', '').strip()
+                if not topic:
+                    messages.error(request, "Mavzu matnini kiriting!")
+                else:
+                    question.question_text = topic
+                    question.correct_answer = ''
+                    question.save()
+                    messages.success(request, "✅ Yozma ish (Writing) savoli tahrirlandi!")
+                    return redirect('admin_question_list')
+            
             else:
-                question.scrambled_words = request.POST.get('scrambled_words')
-                question.correct_sentence = request.POST.get('correct_sentence')
-                question.question_text = None
-                question.correct_answer = None
-            
-            question.save()
-            messages.success(request, "Savol tahrirlandi!")
-            return redirect('admin_question_list')
-            
+                messages.error(request, f"Noto'g'ri savol turi: {question_type}")
+                
         except Category.DoesNotExist:
             messages.error(request, "Kategoriya topilmadi!")
+        except Exception as e:
+            messages.error(request, f'Xatolik: {str(e)}')
+        
+        return redirect('admin_question_edit', pk=question.id)
     
+    # ============ GET so'rovi - tahrirlash formasini ko'rsatish ============
     categories = Category.objects.all()
-    context = {
+    
+    # Savol turiga qarab qo'shimcha ma'lumotlarni tayyorlash
+    if question.question_type == 'multiple_choice' and question.scrambled_words:
+        try:
+            question.options_list = json.loads(question.scrambled_words)
+        except:
+            question.options_list = []
+    
+    elif question.question_type == 'matching' and question.scrambled_words:
+        try:
+            matching_data = json.loads(question.scrambled_words)
+            question.matching_left = matching_data.get('left', [])
+            question.matching_right = matching_data.get('right', [])
+        except:
+            question.matching_left = []
+            question.matching_right = []
+        try:
+            question.matching_matches = json.loads(question.correct_answer) if question.correct_answer else {}
+        except:
+            question.matching_matches = {}
+    
+    elif question.question_type == 'cloze_multiple_blanks':
+        try:
+            question.cloze_blanks = json.loads(question.blank_options) if question.blank_options else {}
+            question.cloze_correct_answers = json.loads(question.correct_answer) if question.correct_answer else {}
+        except:
+            question.cloze_blanks = {}
+            question.cloze_correct_answers = {}
+    
+    elif question.question_type == 'underline_correct' and question.scrambled_words:
+        try:
+            question.underline_options = json.loads(question.scrambled_words)
+        except:
+            question.underline_options = []
+    
+    elif question.question_type == 'fill_blank' and question.correct_answer:
+        if '|' in question.correct_answer:
+            question.fill_blank_variants = [v.strip() for v in question.correct_answer.split('|')]
+        else:
+            question.fill_blank_variants = [question.correct_answer]
+    
+    return render(request, 'groups/admin_question_edit.html', {
         'question': question,
         'categories': categories,
-    }
-    return render(request, 'groups/admin_question_edit.html', context)
+    })
 
-@staff_member_required
-def admin_question_delete(request, pk):
-    """Savolni o'chirish"""
-    question = get_object_or_404(QuizQuestion, id=pk)
-    
-    if request.method == 'POST':
-        question.delete()
-        messages.success(request, "Savol o'chirildi!")
-        return redirect('admin_question_list')
-    
-    return render(request, 'groups/admin_question_confirm_delete.html', {'question': question})
 
 
 

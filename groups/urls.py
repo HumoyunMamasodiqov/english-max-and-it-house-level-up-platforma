@@ -27,13 +27,30 @@ urlpatterns = [
     path('groups/<int:group_id>/categories/', views.group_categories_manage, name='group_categories_manage'),
     path('groups/<int:group_id>/categories/add/', views.group_category_add, name='group_category_add'),
     path('groups/categories/remove/<int:group_category_id>/', views.group_category_remove, name='group_category_remove'),
-
-    # KATEGORIYA SAVOLLARI
+    path('quiz/student-attempts/<int:student_id>/', views.student_attempts_api, name='student_attempts_api'),
+    path('quiz/result-details/<int:result_id>/', views.quiz_result_details_api, name='quiz_result_details_api'),
+    path('groups/api/group/<int:group_id>/', views.get_group_api, name='get_group_api'),
+    path('groups/category-group-config/edit/<int:config_id>/', views.category_group_config_edit_api, name='category_group_config_edit_api'),
+    path('groups/category-group-config/delete/<int:config_id>/', views.category_group_config_delete_api, name='category_group_config_delete_api'),
+    path('save-answer-api/', views.save_answer_api, name='save_answer_api'),
+    
+    # Qadimgi URL'lar uchun (slash boshida)
+    path('check-audio-play/', views.check_audio_play_old, name='check_audio_play_old'),
+    path('record-audio-play/', views.record_audio_play_old, name='record_audio_play_old'),
+    
+    path('quiz/auto-stop/', views.auto_stop_exam_api, name='auto_stop_exam_api'),
+    path('quiz/check-time-expired/', views.check_time_expired_api, name='check_time_expired_api'),
     path('categories/<int:category_id>/questions/', views.category_questions_list, name='category_questions_list'),
     path('categories/<int:category_id>/questions/add/', views.category_question_add, name='category_question_add'),
     path('questions/<int:question_id>/edit/', views.category_question_edit, name='category_question_edit'),
     path('questions/<int:question_id>/delete/', views.category_question_delete, name='category_question_delete'),
-
+    path('save-category-configs/<int:group_id>/', views.save_category_configs_api, name='save_category_configs_api'),
+    path('quiz/results/<int:group_id>/', views.quiz_results, name='quiz_results'),
+    path('category/<int:category_id>/group-config/', views.category_group_config, name='category_group_config'),
+    path('category/<int:category_id>/group-config/add/', views.category_group_config_add, name='category_group_config_add'),
+    path('category-group-config/<int:config_id>/edit/', views.category_group_config_edit, name='category_group_config_edit'),
+    path('category-group-config/<int:config_id>/delete/', views.category_group_config_delete, name='category_group_config_delete'),
+    
     # STUDENTLAR
     path('users/', views.student_list, name='student_list'),
     path('user/add/', views.student_add, name='student_add'),
@@ -66,7 +83,6 @@ urlpatterns = [
     # STUDENT QUIZ
     path('quiz/take/<int:group_id>/', views.quiz_take, name='quiz_take'),
     path('quiz/submit/', views.quiz_submit, name='quiz_submit'),
-    path('quiz/results/<int:group_id>/', views.quiz_results, name='quiz_results'),
 
     # IMTIHON BOSHQARUVI
     path('exam/control/<int:group_id>/', views.exam_control, name='exam_control'),
@@ -81,12 +97,32 @@ urlpatterns = [
     # API
     path('api/admin-detail/<int:admin_id>/', views.admin_detail_api, name='admin_detail_api'),
     path('api/admin-update/', views.admin_update, name='admin_update'),
+    path('quiz/check-audio-play/', views.check_audio_play_api, name='check_audio_play'),
+    path('quiz/record-audio-play/', views.record_audio_play_api, name='record_audio_play'),
     path('api/admin-get-plain-password/<int:admin_id>/', views.admin_get_plain_password, name='admin_get_plain_password'),
     path('api/admin-update-password/', views.admin_update_password, name='admin_update_password'),
-
-    # ============ SAVOLLAR UCHUN MAXSUS SAHIFALAR (admin/ dan boshqa nom bilan) ============
+    path('reading-texts/', views.reading_texts_list, name='reading_texts_list'),
+    path('reading-texts/edit/<int:pk>/', views.reading_text_edit, name='reading_text_edit'),
+    
+    # SAVOLLAR UCHUN MAXSUS SAHIFALAR
     path('questions-list/', views.admin_question_list, name='admin_question_list'),
     path('questions-add/', views.admin_question_add, name='admin_question_add'),
     path('questions-edit/<int:pk>/', views.admin_question_edit, name='admin_question_edit'),
     path('questions-delete/<int:pk>/', views.admin_question_delete, name='admin_question_delete'),
+    # WRITING (Yozma ish) BAHOLASH
+    path('writing/review/<int:group_id>/', views.admin_writing_review, name='admin_writing_review'),
+    path('writing/grade/<int:result_id>/<int:question_id>/', views.admin_writing_grade_api, name='admin_writing_grade_api'),
+    # QUIZ SUBMIT uchun URL (muhim!)
+    path('quiz/pause/', views.pause_exam_api, name='pause_exam_api'),
+    path('quiz/resume/', views.resume_exam_api, name='resume_exam_api'),
+      path('quiz/admin-questions/delete/<int:pk>/', views.admin_question_delete_api, name='admin_question_delete_api'),
+# STUDENT QUIZ
+  path('offline/', views.offline_view, name='offline'),
+
+
+path('admin/questions/delete/<int:pk>/', views.admin_question_delete, name='admin_question_delete'),
+
+path('quiz/get-remaining-time/', views.get_remaining_time_api, name='get_remaining_time_api'),
+path('quiz/take/<int:group_id>/', views.quiz_take, name='quiz_take'),
+path('quiz-submit/', views.quiz_submit, name='quiz_submit'),  # <-- BU QATORNI QO'SHING
 ]
