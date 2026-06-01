@@ -11,7 +11,10 @@ def get_item(dictionary, key):
     if dictionary is None:
         return {}
     if isinstance(dictionary, dict):
-        return dictionary.get(str(key), [])
+        val = dictionary.get(key)
+        if val is not None:
+            return val
+        return dictionary.get(str(key), {})
     return {}
 
 @register.filter
@@ -77,6 +80,9 @@ def get_item(dictionary, key):
     """Dict dan qiymat olish"""
     if dictionary is None:
         return ''
+    val = dictionary.get(key)
+    if val is not None:
+        return val
     return dictionary.get(str(key), '')
 
 @register.filter

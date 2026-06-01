@@ -5,7 +5,7 @@ from django.contrib.auth.admin import UserAdmin
 from django.contrib.auth.models import User
 from .models import (
     Group, Student, ExamSession, ExamResult, ExamControl, 
-    AdminPassword, Rules, Category, QuizQuestion
+    AdminPassword, Rules, Category, QuizQuestion, Teacher, TeacherScoreLog, AssessmentScore
 )
 
 # forms.py dan import
@@ -432,6 +432,36 @@ class RulesAdmin(admin.ModelAdmin):
 
 
 # ============ ADMIN PANEL UCHUN QO'SHIMCHA SOZLAMALAR ============
+
+# ============ TEACHER ADMIN ============
+@admin.register(Teacher)
+class TeacherAdmin(admin.ModelAdmin):
+    list_display = ['user', 'is_active', 'all_groups', 'groups_display', 'created_at']
+    search_fields = ['user__first_name', 'user__last_name', 'user__username']
+    filter_horizontal = ['groups']
+    list_filter = ['is_active', 'all_groups']
+
+    def groups_display(self, obj):
+        if obj.all_groups:
+            return 'Barcha guruhlar'
+        return ', '.join(g.name for g in obj.groups.all())
+    groups_display.short_description = 'Guruhlar'
+
+
+@admin.register(AssessmentScore)
+class AssessmentScoreAdmin(admin.ModelAdmin):
+    list_display = ['student_name_saved', 'group_name_saved', 'assessment_type', 'score', 'added_by', 'created_at']
+    list_filter = ['assessment_type', 'group_name_saved']
+    search_fields = ['student_name_saved', 'group_name_saved']
+    readonly_fields = ['created_at', 'updated_at']
+
+
+@admin.register(TeacherScoreLog)
+class TeacherScoreLogAdmin(admin.ModelAdmin):
+    list_display = ['teacher', 'student_name_saved', 'group_name_saved', 'score_added', 'comment', 'created_at']
+    list_filter = ['created_at']
+    search_fields = ['teacher__user__username', 'student_name_saved', 'group_name_saved']
+
 
 # Admin panel sarlavhasini o'zgartirish
 admin.site.site_header = 'Guruhlar Boshqaruvi - Admin Panel'

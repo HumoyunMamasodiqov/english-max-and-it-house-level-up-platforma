@@ -34,7 +34,7 @@
             </div>
             <div class="bg-white border border-gray-200 p-5 text-center">
                 <div class="text-3xl font-light text-blue-600">{{ above_70 }}</div>
-                <div class="text-xs text-gray-500 uppercase mt-1">70+ ball</div>
+                <div class="text-xs text-gray-500 uppercase mt-1">Yuqori ball</div>
             </div>
         </div>
 
@@ -75,21 +75,20 @@
                             <td class="px-6 py-3">
                                 <div class="flex items-center gap-2">
                                     <div class="w-32 bg-gray-100 rounded-full h-2">
-                                        <div class="h-2 rounded-full {% if s.score >= 70 %}bg-green-600{% elif s.score >= 50 %}bg-yellow-600{% else %}bg-red-500{% endif %}" style="width: {{ s.score }}%"></div>
+                                        <div class="h-2 rounded-full {% if s.grade_class == 'green' %}bg-green-600{% elif s.grade_class == 'yellow' %}bg-yellow-600{% else %}bg-red-500{% endif %}" style="width: {{ s.score }}%"></div>
                                     </div>
-                                    <span class="text-xs font-mono {% if s.score >= 70 %}text-green-700{% elif s.score >= 50 %}text-yellow-700{% else %}text-red-600{% endif %}">
+                                    <span class="text-xs font-mono {% if s.grade_class == 'green' %}text-green-700{% elif s.grade_class == 'yellow' %}text-yellow-700{% else %}text-red-600{% endif %}">
                                         {{ s.score|floatformat:1 }}%
                                     </span>
                                 </div>
                             </td>
                             <td class="px-6 py-3">
-                                {% if s.score >= 70 %}
-                                    <span class="text-xs bg-green-100 text-green-700 px-2 py-0.5 rounded-full">✅ Yuqori</span>
-                                {% elif s.score >= 50 %}
-                                    <span class="text-xs bg-yellow-100 text-yellow-700 px-2 py-0.5 rounded-full">⚠️ O'rta</span>
-                                {% else %}
-                                    <span class="text-xs bg-red-100 text-red-700 px-2 py-0.5 rounded-full">❌ Past</span>
-                                {% endif %}
+                                <span class="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium 
+                                    {% if s.grade_class == 'green' %}bg-green-100 text-green-700
+                                    {% elif s.grade_class == 'yellow' %}bg-yellow-100 text-yellow-700
+                                    {% else %}bg-red-100 text-red-700{% endif %}">
+                                    {{ s.grade }}
+                                </span>
                             </td>
                         </tr>
                         {% empty %}
@@ -137,9 +136,11 @@ new Chart(document.getElementById('scoreDistributionChart'), {
 });
 
 // 2. Student ballari - Bar chart
+var lowThreshold = {{ exam_config.low_threshold|default:50 }};
+var highThreshold = {{ exam_config.high_threshold|default:70 }};
 const barColors = scoreValues.map(v => {
-    if (v >= 70) return '#16a34a';
-    if (v >= 50) return '#eab308';
+    if (v >= highThreshold) return '#16a34a';
+    if (v >= lowThreshold) return '#eab308';
     return '#ef4444';
 });
 

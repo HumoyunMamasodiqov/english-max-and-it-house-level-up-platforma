@@ -21,7 +21,8 @@ from .models import (
     AdminPassword, Rules, QuizQuestion, QuizSession, QuizResult,
     Category, GroupCategory, GroupExamConfig, UserExamAttempt,
     CategoryGroupConfig, StudentQuestionHistory,
-    ReadingText, ReadingQuestion, StudentAudioPlay
+    ReadingText, ReadingQuestion, StudentAudioPlay,
+    Device, Teacher, TeacherScoreLog, AssessmentScore
 )
 from .forms import GroupForm, RegisterForm, LoginForm
 
@@ -112,6 +113,8 @@ def user_login(request):
     if request.user.is_authenticated:
         if is_admin_user(request.user):
             return redirect('admin_panel')
+        elif is_teacher_user(request.user):
+            return redirect('teacher_panel')
         return redirect('student_panel')
 
     if request.method == 'POST':
@@ -125,6 +128,8 @@ def user_login(request):
                 messages.success(request, f'Xush kelibsiz, {user.get_full_name() or user.username}!')
                 if is_admin_user(user):
                     return redirect('admin_panel')
+                elif is_teacher_user(user):
+                    return redirect('teacher_panel')
                 return redirect('student_panel')
             else:
                 messages.error(request, 'Username yoki parol xato!')
@@ -1374,40 +1379,41 @@ def get_saved_answers_api(request, group_id):
 
 
 @login_required
+@user_passes_test(is_admin_user)
 def quiz_results(request, group_id):
     if not is_admin_user(request.user):
         messages.error(request, 'Sizda bu sahifani ko\'rish huquqi yo\'q!')
         return redirect('home')
 
-    group = get_object_or_404(Group, id=group_id)
-    
-    # MUHIM: Distinct bilan olish, har bir student uchun eng oxirgi natijani olish
     from django.db.models import Max, Subquery, OuterRef
-    
-    # Har bir student uchun eng oxirgi natijani olish
-    latest_results = QuizResult.objects.filter(
-        quiz_session__group=group
-    ).values('student_id').annotate(
-        latest_id=Max('id')
-    ).values_list('latest_id', flat=True)
-    
-    all_results = QuizResult.objects.filter(
-        id__in=latest_results
-    ).select_related('student__user').order_by('-submitted_at')
-    
-    # Yoki alternativ: guruhlash
+
+    group = get_object_or_404(Group, id=group_id)
+    group_name = group.name
+
+    # Guruh orqali natijalar (guruh o'chirilsa ham saqlangan)
+    all_results = QuizResult.objects.none()
+    if group:
+        all_results = QuizResult.objects.filter(quiz_session__group=group)
+    archived = QuizResult.objects.filter(
+        quiz_session__isnull=True, group_name_saved=group_name
+    )
+    all_results = (all_results | archived).distinct().order_by('-submitted_at')
+
+    # Student bo'yicha guruhlash
     unique_results = {}
     for result in all_results:
-        student_id = result.student.id
-        # Faqat eng oxirgi natijani saqlash
-        if student_id not in unique_results:
+        student_key = result.student_id or result.student_name_saved
+        student_name = result.student_name_saved or (result.student.full_name if result.student else 'Noma\'lum')
+        username = result.student.user.username if result.student and result.student.user else ''
+
+        if student_key not in unique_results:
             total_possible = result.total_questions or 0
             score_pct = float(result.score)
             raw_score = round((score_pct / 100) * total_possible, 1) if total_possible > 0 else 0
-            unique_results[student_id] = {
-                'student_id': student_id,
-                'student_name': result.student.full_name,
-                'username': result.student.user.username,
+            unique_results[student_key] = {
+                'student_id': result.student_id,
+                'student_name': student_name,
+                'username': username,
                 'last_score': score_pct,
                 'raw_score': raw_score,
                 'last_submitted': result.submitted_at,
@@ -1415,26 +1421,61 @@ def quiz_results(request, group_id):
                 'attempt_count': 1
             }
         else:
-            # Agar eski natija bo'lsa, yangisini olish
-            if result.submitted_at > unique_results[student_id]['last_submitted']:
+            if result.submitted_at > unique_results[student_key]['last_submitted']:
                 total_possible = result.total_questions or 0
                 score_pct = float(result.score)
                 raw_score = round((score_pct / 100) * total_possible, 1) if total_possible > 0 else 0
-                unique_results[student_id]['last_score'] = score_pct
-                unique_results[student_id]['raw_score'] = raw_score
-                unique_results[student_id]['last_submitted'] = result.submitted_at
-                unique_results[student_id]['total_questions'] = total_possible
-            unique_results[student_id]['attempt_count'] += 1
+                unique_results[student_key]['last_score'] = score_pct
+                unique_results[student_key]['raw_score'] = raw_score
+                unique_results[student_key]['last_submitted'] = result.submitted_at
+                unique_results[student_key]['total_questions'] = total_possible
+            unique_results[student_key]['attempt_count'] += 1
 
     unique_list = list(unique_results.values())
     total_score = sum(r['last_score'] for r in unique_list) if unique_list else 0
     avg_score = round(total_score / len(unique_list), 1) if unique_list else 0
     max_score = max([r['last_score'] for r in unique_list]) if unique_list else 0
 
+    # Har bir student uchun oxirgi qurilmani topish
+    for item in unique_list:
+        student_id = item['student_id']
+        if student_id:
+            last_device = Device.objects.filter(student_id=student_id).order_by('-last_seen').first()
+            item['device_name'] = last_device.name if last_device and last_device.name else (last_device.device_id[:15] + '...' if last_device else None)
+            item['device_platform'] = last_device.platform if last_device else None
+        else:
+            item['device_name'] = None
+            item['device_platform'] = None
+
+    # Baholash tizimi ma'lumoti
+    exam_config = GroupExamConfig.objects.filter(group=group).first() if group else None
+    for item in unique_list:
+        score = item['last_score']
+        if exam_config and exam_config.grading_enabled:
+            if score < exam_config.low_threshold:
+                item['grade'] = exam_config.label_low
+                item['grade_class'] = 'red'
+            elif score >= exam_config.high_threshold:
+                item['grade'] = exam_config.label_high
+                item['grade_class'] = 'green'
+            else:
+                item['grade'] = exam_config.label_medium
+                item['grade_class'] = 'yellow'
+        else:
+            if score >= 70:
+                item['grade'] = 'Yuqori'
+                item['grade_class'] = 'green'
+            elif score >= 50:
+                item['grade'] = "O'rta"
+                item['grade_class'] = 'yellow'
+            else:
+                item['grade'] = 'Past'
+                item['grade_class'] = 'red'
+
     context = {
         'group': group,
         'unique_results': unique_list,
-        'total_results': QuizResult.objects.filter(quiz_session__group=group).count(),
+        'total_results': all_results.count(),
         'avg_score': avg_score,
         'max_score': max_score,
     }
@@ -2367,6 +2408,14 @@ def group_exam_config(request, group_id):
             max_attempts = int(request.POST.get('max_attempts', 1))
             use_category_configs = request.POST.get('use_category_configs') == 'on'
 
+            # Baholash tizimi sozlamalari
+            grading_enabled = request.POST.get('grading_enabled') == 'on'
+            low_threshold = int(request.POST.get('low_threshold', 40))
+            high_threshold = int(request.POST.get('high_threshold', 70))
+            label_low = request.POST.get('label_low', 'Past').strip()
+            label_medium = request.POST.get('label_medium', "O'rta").strip()
+            label_high = request.POST.get('label_high', 'Yuqori').strip()
+
             if questions_per_student <= 0:
                 messages.error(request, 'Savollar soni 0 dan katta bo\'lishi kerak!')
                 return redirect('group_exam_config', group_id=group.id)
@@ -2380,6 +2429,12 @@ def group_exam_config(request, group_id):
             config.time_limit = time_limit
             config.max_attempts = max_attempts
             config.use_category_configs = use_category_configs
+            config.grading_enabled = grading_enabled
+            config.low_threshold = low_threshold
+            config.high_threshold = high_threshold
+            config.label_low = label_low
+            config.label_medium = label_medium
+            config.label_high = label_high
             config.save()
 
             messages.success(request, '✅ Sozlamalar saqlandi!')
@@ -3967,9 +4022,23 @@ from django.db.models import Q
 import json
 
 @login_required
-@user_passes_test(is_admin_user)
 def admin_writing_review(request, group_id):
-    group = get_object_or_404(Group, id=group_id)
+    if not is_admin_user(request.user) and not is_teacher_user(request.user):
+        messages.error(request, 'Sizda bu sahifani ko\'rish huquqi yo\'q!')
+        return redirect('login')
+
+    # Teacher faqat o'z guruhiga kirishi mumkin
+    if is_teacher_user(request.user) and not is_admin_user(request.user):
+        teacher = request.user.teacher_profile
+        if not teacher.is_active:
+            messages.error(request, 'Profilingiz faol emas!')
+            return redirect('teacher_panel')
+        group = get_object_or_404(Group, id=group_id)
+        if not teacher.all_groups and not teacher.groups.filter(id=group.id).exists():
+            messages.error(request, 'Siz bu guruhga biriktirilmagansiz!')
+            return redirect('teacher_panel')
+    else:
+        group = get_object_or_404(Group, id=group_id)
     results = QuizResult.objects.filter(
         quiz_session__group=group
     ).order_by('-submitted_at')
@@ -4007,8 +4076,10 @@ def admin_writing_review(request, group_id):
     })
 
 @login_required
-@user_passes_test(is_admin_user)
 def admin_writing_grade_api(request, result_id, question_id):
+    if not is_admin_user(request.user) and not is_teacher_user(request.user):
+        return JsonResponse({'success': False, 'message': 'Huquq yo\'q'})
+
     if request.method != 'POST':
         return JsonResponse({'success': False, 'message': 'POST kerak'})
     try:
@@ -4061,6 +4132,20 @@ def admin_writing_grade_api(request, result_id, question_id):
         result.total_questions = total_possible
         result.answers[qid_str] = ans_data
         result.save()
+
+        group = result.quiz_session.group
+        if group and result.student:
+            AssessmentScore.objects.update_or_create(
+                student=result.student,
+                group=group,
+                assessment_type='written',
+                defaults={
+                    'score': int(earned_points),
+                    'added_by': request.user,
+                    'student_name_saved': result.student.full_name,
+                    'group_name_saved': group.name,
+                }
+            )
 
         return JsonResponse({
             'success': True,
@@ -4432,9 +4517,22 @@ def admin_question_edit(request, pk):
 # ============================================================
 
 @login_required
-@user_passes_test(is_admin_user)
 def speaking_review(request, group_id):
-    group = get_object_or_404(Group, id=group_id)
+    if not is_admin_user(request.user) and not is_teacher_user(request.user):
+        messages.error(request, 'Sizda bu sahifani ko\'rish huquqi yo\'q!')
+        return redirect('login')
+
+    if is_teacher_user(request.user) and not is_admin_user(request.user):
+        teacher = request.user.teacher_profile
+        if not teacher.is_active:
+            messages.error(request, 'Profilingiz faol emas!')
+            return redirect('teacher_panel')
+        group = get_object_or_404(Group, id=group_id)
+        if not teacher.all_groups and not teacher.groups.filter(id=group.id).exists():
+            messages.error(request, 'Siz bu guruhga biriktirilmagansiz!')
+            return redirect('teacher_panel')
+    else:
+        group = get_object_or_404(Group, id=group_id)
     results = QuizResult.objects.filter(quiz_session__group=group).order_by('-submitted_at')
     questions = QuizQuestion.objects.filter(category__group_categories__group=group, question_type='speaking').distinct()
 
@@ -4491,9 +4589,11 @@ def speaking_review(request, group_id):
 
 
 @login_required
-@user_passes_test(is_admin_user)
 @csrf_exempt
 def speaking_save_score_api(request):
+    if not is_admin_user(request.user) and not is_teacher_user(request.user):
+        return JsonResponse({'success': False, 'message': 'Huquq yo\'q'})
+
     if request.method != 'POST':
         return JsonResponse({'success': False, 'message': 'POST kerak'})
     try:
@@ -4562,6 +4662,18 @@ def speaking_save_score_api(request):
         result.score = round((total_score / total_possible) * 100, 1) if total_possible > 0 else 0
         result.total_questions = total_possible
         result.save()
+
+        AssessmentScore.objects.update_or_create(
+            student=student,
+            group=group,
+            assessment_type='speaking',
+            defaults={
+                'score': int(earned_points),
+                'added_by': request.user,
+                'student_name_saved': student.full_name,
+                'group_name_saved': group.name,
+            }
+        )
 
         return JsonResponse({
             'success': True,
@@ -4723,6 +4835,31 @@ def quiz_statistics(request, group_id):
         elif score <= 80: score_ranges['61-80'] += 1
         else: score_ranges['81-100'] += 1
 
+    # Baholash tizimi
+    exam_config = GroupExamConfig.objects.filter(group=group).first()
+    for s in student_scores:
+        score = s['score']
+        if exam_config and exam_config.grading_enabled:
+            if score < exam_config.low_threshold:
+                s['grade_class'] = 'red'
+                s['grade'] = exam_config.label_low
+            elif score >= exam_config.high_threshold:
+                s['grade_class'] = 'green'
+                s['grade'] = exam_config.label_high
+            else:
+                s['grade_class'] = 'yellow'
+                s['grade'] = exam_config.label_medium
+        else:
+            if score >= 70:
+                s['grade_class'] = 'green'
+                s['grade'] = 'Yuqori'
+            elif score >= 50:
+                s['grade_class'] = 'yellow'
+                s['grade'] = "O'rta"
+            else:
+                s['grade_class'] = 'red'
+                s['grade'] = 'Past'
+
     total = len(results)
     avg_score = round(sum(score_values) / total, 1) if total > 0 else 0
     max_score = max(score_values) if score_values else 0
@@ -4742,4 +4879,561 @@ def quiz_statistics(request, group_id):
         'labels': json.dumps(labels),
         'score_values': json.dumps(score_values),
         'student_scores': student_scores,
+        'exam_config': exam_config,
     })
+
+
+# ============================================================
+# QURILMA NAZORATI
+# ============================================================
+
+
+@login_required
+@user_passes_test(is_admin_user)
+def device_monitor(request):
+    """Qurilma nazorati - admin barcha qurilmalarni ko'radi"""
+    from datetime import timedelta
+    now = timezone.now()
+
+    devices = Device.objects.select_related('student__user', 'group').order_by('-last_seen')
+
+    # Online deb hisoblash: oxirgi 2 daqiqa ichida heartbeat kelgan bo'lsa
+    threshold = now - timedelta(minutes=2)
+    online_count = devices.filter(last_seen__gte=threshold).count()
+
+    # AJAX so'rov bo'lsa JSON qaytarish
+    if request.GET.get('ajax') == '1':
+        dev_list = []
+        for d in devices:
+            is_online = d.last_seen and d.last_seen >= threshold
+            dev_list.append({
+                'device_id': d.device_id,
+                'name': d.name or '',
+                'student_name': d.student.full_name if d.student else None,
+                'group_name': d.group.name if d.group else None,
+                'platform': d.platform or '',
+                'ip_address': d.ip_address or '',
+                'last_seen': d.last_seen.isoformat() if d.last_seen else None,
+                'is_active': is_online,
+            })
+        return JsonResponse({'success': True, 'devices': dev_list, 'online_count': online_count, 'total_count': devices.count()})
+
+    # Guruh bo'yicha guruhlash
+    groups_map = {}
+    for d in devices:
+        gname = d.group.name if d.group else "Guruhsiz"
+        if gname not in groups_map:
+            groups_map[gname] = {'group_name': gname, 'devices': []}
+        groups_map[gname]['devices'].append(d)
+
+    total_devices = devices.count()
+
+    return render(request, 'groups/device_monitor.html', {
+        'devices': devices,
+        'groups_map': dict(groups_map),
+        'total_active': online_count,
+        'online_count': online_count,
+        'total_devices': total_devices,
+        'threshold': threshold,  # MUHIM: threshold ni templatega yuboramiz
+    })
+
+@csrf_exempt
+def device_register_api(request):
+    """Qurilma ro'yxatdan o'tadi va heart beat yuboradi"""
+    if request.method != 'POST':
+        return JsonResponse({'error': 'Faqat POST'}, status=405)
+
+    try:
+        data = json.loads(request.body)
+        device_id = data.get('device_id')
+        if not device_id:
+            return JsonResponse({'success': False, 'message': 'device_id kerak'})
+
+        # Studentni topish (agar login bo'lsa)
+        student = None
+        group = None
+        if request.user.is_authenticated:
+            try:
+                student = request.user.student_profile
+                group = student.group
+            except:
+                pass
+
+        ip = request.META.get('REMOTE_ADDR', '')
+        # Proxy orqali bo'lsa
+        xff = request.META.get('HTTP_X_FORWARDED_FOR')
+        if xff:
+            ip = xff.split(',')[0].strip()
+
+        device, created = Device.objects.update_or_create(
+            device_id=device_id,
+            defaults={
+                'student': student,
+                'group': group,
+                'user_agent': data.get('user_agent', ''),
+                'ip_address': ip,
+                'platform': data.get('platform', ''),
+                'screen_resolution': data.get('screen_resolution', ''),
+                'is_active': True,
+            }
+        )
+        return JsonResponse({'success': True, 'created': created, 'device_id': device.device_id})
+
+    except Exception as e:
+        return JsonResponse({'success': False, 'message': str(e)})
+
+
+@csrf_exempt
+def device_offline_api(request):
+    """Qurilmani offline qilish (tab yopilganda)"""
+    if request.method != 'POST':
+        return JsonResponse({'error': 'Faqat POST'}, status=405)
+    try:
+        data = json.loads(request.body)
+        device_id = data.get('device_id')
+        if not device_id:
+            return JsonResponse({'success': False, 'message': 'device_id kerak'})
+        from datetime import timedelta
+        Device.objects.filter(device_id=device_id).update(is_active=False, last_seen=timezone.now() - timedelta(minutes=10))
+        return JsonResponse({'success': True})
+    except Exception as e:
+        return JsonResponse({'success': False, 'message': str(e)})
+
+
+@login_required
+@user_passes_test(is_admin_user)
+def device_rename_api(request):
+    """Admin qurilma nomini o'zgartiradi"""
+    if request.method != 'POST':
+        return JsonResponse({'error': 'Faqat POST'}, status=405)
+    try:
+        data = json.loads(request.body)
+        device = get_object_or_404(Device, device_id=data.get('device_id'))
+        device.name = data.get('name', '')
+        device.save(update_fields=['name'])
+        return JsonResponse({'success': True})
+    except Exception as e:
+        return JsonResponse({'success': False, 'message': str(e)})
+
+
+@login_required
+@user_passes_test(is_admin_user)
+def device_delete_api(request):
+    """Admin qurilmani o'chiradi"""
+    if request.method != 'POST':
+        return JsonResponse({'error': 'Faqat POST'}, status=405)
+    try:
+        data = json.loads(request.body)
+        device = get_object_or_404(Device, device_id=data.get('device_id'))
+        device.delete()
+        return JsonResponse({'success': True})
+    except Exception as e:
+        return JsonResponse({'success': False, 'message': str(e)})
+
+
+@login_required
+@user_passes_test(is_admin_user)
+def device_history(request):
+    """Qurilma tarixi - qaysi student qaysi qurilmada ishlagan"""
+    devices = Device.objects.select_related('student__user', 'group').order_by('-last_seen')
+    students_map = {}
+    for d in devices:
+        if d.student:
+            key = d.student.id
+            if key not in students_map:
+                students_map[key] = {
+                    'student': d.student,
+                    'devices': []
+                }
+            students_map[key]['devices'].append(d)
+
+    total_students = len(students_map)
+    total_devices = devices.count()
+
+    return render(request, 'groups/device_history.html', {
+        'students_map': dict(students_map),
+        'total_students': total_students,
+        'total_devices': total_devices,
+    })
+
+
+# ============================================================
+# ARXIV
+# ============================================================
+
+
+@login_required
+@user_passes_test(is_admin_user)
+def results_archive(request):
+    """Arxiv - barcha studentlarning barcha natijalari"""
+
+    # Mavjud guruhlar
+    existing_group_names = set(Group.objects.values_list('name', flat=True))
+
+    # Barcha natijalarni guruh nomi bo'yicha guruhlash
+    group_results_map = {}
+    all_results = QuizResult.objects.all().order_by('-submitted_at')
+
+    for r in all_results:
+        gname = None
+        if r.quiz_session and r.quiz_session.group:
+            gname = r.quiz_session.group.name
+        elif r.group_name_saved:
+            gname = r.group_name_saved
+        elif r.quiz_session:
+            gname = f"Sessiya #{r.quiz_session.id}"
+        else:
+            gname = "Noma'lum guruh"
+
+        if gname not in group_results_map:
+            group_results_map[gname] = {
+                'group_name': gname,
+                'is_deleted': gname not in existing_group_names,
+                'results': [],
+            }
+        group_results_map[gname]['results'].append(r)
+
+    # Har bir guruh uchun studentlarni guruhlash
+    groups_data = []
+    for gname, gdata in group_results_map.items():
+        # Guruh sozlamalarini olish (agar guruh mavjud bo'lsa)
+        group = Group.objects.filter(name=gname).first()
+        exam_config = GroupExamConfig.objects.filter(group=group).first() if group else None
+
+        def get_grade(score_val):
+            if exam_config and exam_config.grading_enabled:
+                if score_val < exam_config.low_threshold:
+                    return 'red', exam_config.label_low
+                elif score_val >= exam_config.high_threshold:
+                    return 'green', exam_config.label_high
+                else:
+                    return 'yellow', exam_config.label_medium
+            else:
+                if score_val >= 70:
+                    return 'green', 'Yuqori'
+                elif score_val >= 50:
+                    return 'yellow', "O'rta"
+                else:
+                    return 'red', 'Past'
+
+        students_data = {}
+        for r in gdata['results']:
+            student_key = r.student_id or r.student_name_saved
+            student_name = r.student_name_saved or (r.student.full_name if r.student else 'Noma\'lum')
+            if student_key not in students_data:
+                device_info = None
+                if r.student_id:
+                    device = Device.objects.filter(student_id=r.student_id).order_by('-last_seen').first()
+                    if device:
+                        device_info = device.name if device.name else device.device_id[:15] + '...'
+                students_data[student_key] = {
+                    'student_name': student_name,
+                    'student_id': r.student_id,
+                    'device_name': device_info,
+                    'attempts': [],
+                    'best_score': 0,
+                    'worst_score': 100,
+                    'total_attempts': 0,
+                }
+            students_data[student_key]['attempts'].append(r)
+            students_data[student_key]['total_attempts'] += 1
+            score_val = float(r.score)
+            if score_val > students_data[student_key]['best_score']:
+                students_data[student_key]['best_score'] = score_val
+            if score_val < students_data[student_key]['worst_score']:
+                students_data[student_key]['worst_score'] = score_val
+
+        for sdata in students_data.values():
+            grade_class, grade_label = get_grade(sdata['best_score'])
+            sdata['grade_class'] = grade_class
+            sdata['grade'] = grade_label
+
+        groups_data.append({
+            'group_name': gname,
+            'is_deleted': gdata['is_deleted'],
+            'students': list(students_data.values()),
+            'total_students': len(students_data),
+        })
+
+    return render(request, 'groups/results_archive.html', {
+        'groups_data': groups_data,
+        'total_groups': len(groups_data),
+        'total_results': all_results.count(),
+    })
+
+
+# ============================================================
+# O'QITUVCHI (TEACHER)
+# ============================================================
+
+
+def is_teacher_user(user):
+    return user.is_authenticated and hasattr(user, 'teacher_profile')
+
+
+@csrf_exempt
+def teacher_login(request):
+    from django.contrib.auth.forms import AuthenticationForm
+    if request.user.is_authenticated:
+        if is_teacher_user(request.user):
+            return redirect('teacher_panel')
+        if is_admin_user(request.user):
+            return redirect('admin_panel')
+        return redirect('student_panel')
+
+    if request.method == 'POST':
+        form = AuthenticationForm(request, data=request.POST)
+        if form.is_valid():
+            username = form.cleaned_data.get('username')
+            password = form.cleaned_data.get('password')
+            user = authenticate(username=username, password=password)
+            if user is not None and is_teacher_user(user):
+                login(request, user)
+                messages.success(request, f'Xush kelibsiz, {user.get_full_name() or user.username}!')
+                return redirect('teacher_panel')
+            elif user is not None:
+                messages.error(request, 'Siz o\'qituvchi sifatida ro\'yxatdan o\'tmagansiz!')
+            else:
+                messages.error(request, 'Username yoki parol xato!')
+        else:
+            messages.error(request, 'Username yoki parol xato!')
+    else:
+        form = AuthenticationForm()
+
+    return render(request, 'groups/teacher_login.html', {'form': form})
+
+
+@login_required
+def teacher_panel(request):
+    if not is_teacher_user(request.user):
+        messages.error(request, 'Sizda bu sahifani ko\'rish huquqi yo\'q!')
+        return redirect('login')
+
+    teacher = request.user.teacher_profile
+    if teacher.all_groups:
+        groups = Group.objects.all().order_by('name')
+    else:
+        groups = teacher.groups.all().order_by('name')
+
+    return render(request, 'groups/teacher_panel.html', {
+        'teacher': teacher,
+        'groups': groups,
+    })
+
+
+@login_required
+def teacher_group_view(request, group_id):
+    if not is_teacher_user(request.user):
+        messages.error(request, 'Sizda bu sahifani ko\'rish huquqi yo\'q!')
+        return redirect('login')
+
+    teacher = request.user.teacher_profile
+    group = get_object_or_404(Group, id=group_id)
+
+    # Faqat o'z guruhlariga kirish
+    if not teacher.all_groups and not teacher.groups.filter(id=group.id).exists():
+        messages.error(request, 'Siz bu guruhga biriktirilmagansiz!')
+        return redirect('teacher_panel')
+
+    students = Student.objects.filter(group=group).order_by('user__first_name')
+
+    return render(request, 'groups/teacher_group.html', {
+        'teacher': teacher,
+        'group': group,
+        'students': students,
+    })
+
+@login_required
+@user_passes_test(is_admin_user)
+def teacher_score_logs(request):
+    logs = []
+    
+    # TeacherScoreLog larni qo'shish
+    teacher_logs = TeacherScoreLog.objects.select_related('teacher__user', 'student__user').all()
+    for log in teacher_logs:
+        logs.append({
+            'type': 'teacher_log',
+            'teacher_name': log.teacher.user.get_full_name() or log.teacher.user.username,
+            'student_name': log.student_name_saved or (log.student.full_name if log.student else 'Noma\'lum'),
+            'group_name': log.group_name_saved or (log.student.group.name if log.student and log.student.group else '-'),
+            'score': log.score_added,
+            'comment': log.comment or '',
+            'created_at': log.created_at,
+        })
+    
+    # QuizResult larni qo'shish (test natijalari)
+    quiz_results = QuizResult.objects.select_related('student__user', 'quiz_session').all()
+    for qr in quiz_results:
+        logs.append({
+            'type': 'quiz',
+            'teacher_name': 'Avtomatik',
+            'student_name': qr.student_name_saved or (qr.student.full_name if qr.student else 'Noma\'lum'),
+            'group_name': qr.group_name_saved or (qr.student.group.name if qr.student and qr.student.group else '-'),
+            'score': qr.score,
+            'comment': f"Test: {qr.total_questions} ta savol",
+            'created_at': qr.submitted_at,
+        })
+
+    # AssessmentScore larni qo'shish (Speaking va Writing)
+    assessment_logs = AssessmentScore.objects.select_related('added_by', 'student__user').all()
+    for a in assessment_logs:
+        added_by_name = a.added_by.get_full_name() or a.added_by.username if a.added_by else 'Noma\'lum'
+        assessment_type_display = dict(AssessmentScore.ASSESSMENT_TYPES).get(a.assessment_type, a.assessment_type)
+        
+        logs.append({
+            'type': 'assessment',
+            'assessment_type': a.assessment_type,
+            'assessment_type_display': assessment_type_display,
+            'teacher_name': added_by_name,
+            'student_name': a.student_name_saved or (a.student.full_name if a.student else 'Noma\'lum'),
+            'group_name': a.group_name_saved or (a.student.group.name if a.student and a.student.group else '-'),
+            'score': a.score,
+            'comment': assessment_type_display,
+            'created_at': a.created_at,
+        })
+    
+    # Vaqt bo'yicha saralash (eng yangisi birinchi)
+    logs.sort(key=lambda x: x['created_at'], reverse=True)
+    
+    return render(request, 'groups/teacher_score_logs.html', {'logs': logs})
+@login_required
+@user_passes_test(is_admin_user)
+def teacher_list(request):
+    teachers = Teacher.objects.select_related('user').all().order_by('-created_at')
+    return render(request, 'groups/teacher_list.html', {'teachers': teachers})
+
+
+@login_required
+@user_passes_test(is_admin_user)
+def teacher_add(request):
+    groups = Group.objects.all().order_by('name')
+    if request.method == 'POST':
+        username = request.POST.get('username', '').strip()
+        password = request.POST.get('password', '').strip()
+        first_name = request.POST.get('first_name', '').strip()
+        last_name = request.POST.get('last_name', '').strip()
+        group_ids = request.POST.getlist('groups')
+        all_groups = request.POST.get('all_groups') == 'on'
+        is_active = request.POST.get('is_active') == 'on'
+
+        if not username or not password:
+            messages.error(request, 'Username va parol majburiy!')
+        elif User.objects.filter(username=username).exists():
+            messages.error(request, 'Bu username band!')
+        else:
+            try:
+                with transaction.atomic():
+                    user = User.objects.create_user(
+                        username=username,
+                        password=password,
+                        first_name=first_name,
+                        last_name=last_name,
+                    )
+                    teacher = Teacher.objects.create(user=user, all_groups=all_groups, is_active=is_active)
+                    if not all_groups and group_ids:
+                        teacher.groups.set(Group.objects.filter(id__in=group_ids))
+                    messages.success(request, f'O\'qituvchi "{user.get_full_name() or user.username}" yaratildi!')
+                    return redirect('teacher_list')
+            except Exception as e:
+                messages.error(request, f'Xatolik: {str(e)}')
+
+    return render(request, 'groups/teacher_form.html', {
+        'groups': groups,
+        'mode': 'add',
+    })
+
+
+@login_required
+@user_passes_test(is_admin_user)
+def teacher_edit(request, teacher_id):
+    teacher = get_object_or_404(Teacher.objects.select_related('user'), id=teacher_id)
+    groups = Group.objects.all().order_by('name')
+
+    if request.method == 'POST':
+        teacher.user.first_name = request.POST.get('first_name', '').strip()
+        teacher.user.last_name = request.POST.get('last_name', '').strip()
+        password = request.POST.get('password', '').strip()
+        group_ids = request.POST.getlist('groups')
+        all_groups = request.POST.get('all_groups') == 'on'
+        is_active = request.POST.get('is_active') == 'on'
+
+        teacher.all_groups = all_groups
+        teacher.is_active = is_active
+        teacher.save()
+
+        teacher.user.save()
+        if not all_groups and group_ids:
+            teacher.groups.set(Group.objects.filter(id__in=group_ids))
+        else:
+            teacher.groups.clear()
+
+        if password:
+            teacher.user.set_password(password)
+            teacher.user.save()
+
+        messages.success(request, 'O\'qituvchi ma\'lumotlari yangilandi!')
+        return redirect('teacher_list')
+
+    return render(request, 'groups/teacher_form.html', {
+        'teacher': teacher,
+        'groups': groups,
+        'mode': 'edit',
+    })
+
+
+@login_required
+@user_passes_test(is_admin_user)
+def teacher_delete(request, teacher_id):
+    teacher = get_object_or_404(Teacher, id=teacher_id)
+    name = teacher.user.get_full_name() or teacher.user.username
+    teacher.user.delete()  # User va Teacher cascade bo'yicha o'chadi
+    messages.success(request, f'O\'qituvchi "{name}" o\'chirildi!')
+    return redirect('teacher_list')
+
+
+# ============ BAHOLASH (Speaking & Written) ============
+
+@login_required
+@require_http_methods(["POST"])
+def admin_save_assessment_api(request):
+    if not is_admin_user(request.user):
+        return JsonResponse({'success': False, 'message': 'Huquq yo\'q'})
+
+    try:
+        data = json.loads(request.body)
+        student_id = data.get('student_id')
+        assessment_type = data.get('assessment_type')
+        score = int(data.get('score', 0))
+
+        if assessment_type not in ['speaking', 'written']:
+            return JsonResponse({'success': False, 'message': 'Noto\'g\'ri baholash turi'})
+
+        if score < 1 or score > 100:
+            return JsonResponse({'success': False, 'message': 'Ball 1-100 oralig\'ida bo\'lishi kerak'})
+
+        student = get_object_or_404(Student, id=student_id)
+        group = student.group
+
+        assessment, created = AssessmentScore.objects.update_or_create(
+            student=student,
+            group=group,
+            assessment_type=assessment_type,
+            defaults={
+                'score': score,
+                'added_by': request.user,
+                'student_name_saved': student.full_name,
+                'group_name_saved': group.name,
+            }
+        )
+
+        action = "qo'shildi" if created else "yangilandi"
+        assessment_name = dict(AssessmentScore.ASSESSMENT_TYPES)[assessment_type]
+
+        return JsonResponse({
+            'success': True,
+            'message': f'{student.full_name} uchun {assessment_name} bahosi ({score}) {action}',
+            'created': created,
+            'score': assessment.score,
+        })
+    except Exception as e:
+        return JsonResponse({'success': False, 'message': str(e)})

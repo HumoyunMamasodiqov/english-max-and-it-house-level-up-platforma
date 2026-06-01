@@ -406,4 +406,39 @@ $(document).ready(function() {
     animation: pulse 2s cubic-bezier(0.4, 0, 0.6, 1) infinite;
 }
 </style>
+
+<script>
+// Qurilma tracking
+(function() {
+    let deviceId = localStorage.getItem('_dev_id');
+    if (!deviceId) {
+        deviceId = 'DEV-' + Date.now().toString(36) + '-' + Math.random().toString(36).substr(2, 9).toUpperCase();
+        localStorage.setItem('_dev_id', deviceId);
+    }
+
+    function registerDevice() {
+        fetch('/device/register/', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                'X-CSRFToken': '{{ csrf_token }}'
+            },
+            body: JSON.stringify({
+                device_id: deviceId,
+                platform: navigator.platform || navigator.userAgent || '',
+                user_agent: navigator.userAgent,
+                screen_resolution: screen.width + 'x' + screen.height
+            })
+        }).catch(function() {});
+    }
+
+    registerDevice();
+    setInterval(registerDevice, 30000);
+
+    // Tab yopilganda qurilmani offline qilish
+    window.addEventListener('beforeunload', function() {
+        navigator.sendBeacon('/device/offline/', JSON.stringify({device_id: deviceId}));
+    });
+})();
+</script>
 {% endblock %}

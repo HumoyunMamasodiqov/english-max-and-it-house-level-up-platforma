@@ -442,7 +442,7 @@ class QuizQuestion(models.Model):
 
 
 class QuizSession(models.Model):
-    group = models.ForeignKey(Group, on_delete=models.CASCADE)
+    group = models.ForeignKey(Group, on_delete=models.SET_NULL, null=True, blank=True)
     is_active = models.BooleanField(default=False)
     started_at = models.DateTimeField(null=True, blank=True)
     ended_at = models.DateTimeField(null=True, blank=True)
@@ -453,17 +453,19 @@ class QuizSession(models.Model):
         verbose_name_plural = "Quiz sessiyalari"
 
     def __str__(self):
-        return f"{self.group.name} - {'Faol' if self.is_active else 'Tugagan'}"
+        return f"{self.group.name if self.group else 'O\'chirilgan'} - {'Faol' if self.is_active else 'Tugagan'}"
 
 
 class QuizResult(models.Model):
-    student = models.ForeignKey(Student, on_delete=models.CASCADE, related_name='quiz_results')
-    quiz_session = models.ForeignKey(QuizSession, on_delete=models.CASCADE, related_name='results')
-    score = models.FloatField(default=0, verbose_name="Ball (0-100)")  # Float ga o'zgartirildi
+    student = models.ForeignKey(Student, on_delete=models.SET_NULL, null=True, blank=True, related_name='quiz_results')
+    quiz_session = models.ForeignKey(QuizSession, on_delete=models.SET_NULL, null=True, blank=True, related_name='results')
+    score = models.FloatField(default=0, verbose_name="Ball (0-100)")
     total_questions = models.IntegerField(default=0, verbose_name="Jami savollar")
     answers = models.JSONField(default=dict, verbose_name="Javoblar")
     submitted_at = models.DateTimeField(auto_now_add=True)
     attempt_number = models.IntegerField(default=1, verbose_name="Urinish raqami")
+    student_name_saved = models.CharField(max_length=200, blank=True, verbose_name="Student nomi (saqlangan)")
+    group_name_saved = models.CharField(max_length=100, blank=True, verbose_name="Guruh nomi (saqlangan)")
 
     class Meta:
         verbose_name = "Quiz natijasi"
@@ -471,7 +473,8 @@ class QuizResult(models.Model):
         ordering = ['-submitted_at']
 
     def __str__(self):
-        return f"{self.student.full_name} - {self.score}/100 (#{self.attempt_number})"
+        name = self.student_name_saved or (self.student.full_name if self.student else 'Noma\'lum')
+        return f"{name} - {self.score}/100 (#{self.attempt_number})"
 
     @property
     def percentage(self):
@@ -534,7 +537,7 @@ class ExamControl(models.Model):
 
 
 class ExamSession(models.Model):
-    group = models.ForeignKey(Group, on_delete=models.CASCADE, related_name='exam_sessions')
+    group = models.ForeignKey(Group, on_delete=models.SET_NULL, null=True, blank=True, related_name='exam_sessions')
     is_active = models.BooleanField(default=False)
     started_at = models.DateTimeField(null=True, blank=True)
     ended_at = models.DateTimeField(null=True, blank=True)
@@ -545,15 +548,17 @@ class ExamSession(models.Model):
         verbose_name_plural = "Imtihon sessiyalari"
 
     def __str__(self):
-        return f"{self.group.name} - {'Faol' if self.is_active else 'Tugagan'}"
+        return f"{self.group.name if self.group else 'O\'chirilgan'} - {'Faol' if self.is_active else 'Tugagan'}"
 
 
 class ExamResult(models.Model):
-    student = models.ForeignKey(Student, on_delete=models.CASCADE, related_name='exam_results')
-    exam_session = models.ForeignKey(ExamSession, on_delete=models.CASCADE, related_name='results')
+    student = models.ForeignKey(Student, on_delete=models.SET_NULL, null=True, blank=True, related_name='exam_results')
+    exam_session = models.ForeignKey(ExamSession, on_delete=models.SET_NULL, null=True, blank=True, related_name='results')
     score = models.IntegerField(default=0)
     answers = models.JSONField(default=dict)
     submitted_at = models.DateTimeField(auto_now_add=True)
+    student_name_saved = models.CharField(max_length=200, blank=True, verbose_name="Student nomi (saqlangan)")
+    group_name_saved = models.CharField(max_length=100, blank=True, verbose_name="Guruh nomi (saqlangan)")
 
     class Meta:
         verbose_name = "Imtihon natijasi"
@@ -625,6 +630,34 @@ class CategoryGroupConfig(models.Model):
         return f"{self.category.name} -> {self.group.name} ({self.questions_count} savol)"
 
 
+class Device(models.Model):
+    device_id = models.CharField(max_length=255, unique=True, verbose_name="Qurilma ID")
+    name = models.CharField(max_length=100, blank=True, null=True, verbose_name="Nomi")
+    student = models.ForeignKey(Student, on_delete=models.SET_NULL, null=True, blank=True, related_name='devices')
+    group = models.ForeignKey(Group, on_delete=models.SET_NULL, null=True, blank=True, related_name='devices')
+    user_agent = models.TextField(blank=True, verbose_name="Brauzer ma'lumoti")
+    ip_address = models.CharField(max_length=45, blank=True, verbose_name="IP manzil")
+    platform = models.CharField(max_length=100, blank=True, verbose_name="Platforma")
+    screen_resolution = models.CharField(max_length=20, blank=True, verbose_name="Ekran o'lchami")
+    last_seen = models.DateTimeField(auto_now=True, verbose_name="Oxirgi ko'rilgan")
+    first_seen = models.DateTimeField(auto_now_add=True, verbose_name="Birinchi ko'rilgan")
+    is_active = models.BooleanField(default=True, verbose_name="Faol")
+
+    class Meta:
+        verbose_name = "Qurilma"
+        verbose_name_plural = "Qurilmalar"
+        ordering = ['-last_seen']
+
+    def __str__(self):
+        return self.name or self.device_id[:20]
+
+    @property
+    def is_online(self):
+        from django.utils import timezone
+        from datetime import timedelta
+        return self.last_seen >= timezone.now() - timedelta(minutes=2)
+
+
 class StudentQuestionHistory(models.Model):
     student = models.ForeignKey(Student, on_delete=models.CASCADE, related_name='question_history')
     category = models.ForeignKey(Category, on_delete=models.CASCADE)
@@ -648,6 +681,14 @@ class GroupExamConfig(models.Model):
     show_correct_answer = models.BooleanField(default=False, verbose_name="To'g'ri javobni ko'rsatish")
     time_limit = models.IntegerField(default=0, verbose_name="Vaqt limiti (daqiqa)")
     max_attempts = models.IntegerField(default=1, verbose_name="Maksimal urinishlar")
+
+    # Baholash tizimi (past/o'rta/yuqori yoki fail/passed)
+    grading_enabled = models.BooleanField(default=False, verbose_name="Baholash tizimini yoqish")
+    low_threshold = models.IntegerField(default=40, verbose_name="Past/o'rta chegarasi (%)")
+    high_threshold = models.IntegerField(default=70, verbose_name="O'rta/yuqori chegarasi (%)")
+    label_low = models.CharField(max_length=50, default="Past", verbose_name="Past uchun yorliq")
+    label_medium = models.CharField(max_length=50, default="O'rta", verbose_name="O'rta uchun yorliq")
+    label_high = models.CharField(max_length=50, default="Yuqori", verbose_name="Yuqori uchun yorliq")
 
     # Audio sozlamalari (guruh uchun umumiy, eski)
     audio_file = models.FileField(upload_to='exam_audio/', blank=True, null=True, verbose_name="Imtihon audio fayli")
@@ -675,8 +716,8 @@ class StudentAudioPlay(models.Model):
     - play_count: necha marta eshitgan
     - max_plays: maksimal ruxsat etilgan marta (0=cheksiz)
     """
-    student = models.ForeignKey(Student, on_delete=models.CASCADE, related_name='audio_plays')
-    group = models.ForeignKey(Group, on_delete=models.CASCADE)
+    student = models.ForeignKey(Student, on_delete=models.SET_NULL, null=True, blank=True, related_name='audio_plays')
+    group = models.ForeignKey(Group, on_delete=models.SET_NULL, null=True, blank=True)
     category = models.ForeignKey(Category, on_delete=models.CASCADE)
     exam_session = models.ForeignKey(
         'QuizSession', on_delete=models.SET_NULL,
@@ -717,3 +758,71 @@ class StudentAudioPlay(models.Model):
         if self.max_plays == 0:
             return None  # Cheksiz
         return max(0, self.max_plays - self.play_count)
+
+
+class Teacher(models.Model):
+    user = models.OneToOneField(User, on_delete=models.CASCADE, related_name='teacher_profile')
+    groups = models.ManyToManyField(Group, related_name='teachers', verbose_name="Guruhlar", blank=True)
+    all_groups = models.BooleanField(default=False, verbose_name="Barcha guruhlarga kirish")
+    is_active = models.BooleanField(default=True, verbose_name="Faol")
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        verbose_name = "O'qituvchi"
+        verbose_name_plural = "O'qituvchilar"
+
+    def __str__(self):
+        return self.user.get_full_name() or self.user.username
+
+
+class AssessmentScore(models.Model):
+    ASSESSMENT_TYPES = [
+        ('speaking', 'Og\'zaki (Speaking)'),
+        ('written', 'Yozma ish (Written)'),
+    ]
+
+    student = models.ForeignKey(Student, on_delete=models.SET_NULL, null=True, blank=True, related_name='assessment_scores')
+    group = models.ForeignKey(Group, on_delete=models.SET_NULL, null=True, blank=True)
+    assessment_type = models.CharField(max_length=20, choices=ASSESSMENT_TYPES, verbose_name="Baholash turi")
+    score = models.IntegerField(default=0, verbose_name="Ball")
+    added_by = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, blank=True, related_name='added_assessments', verbose_name="Qo'shgan foydalanuvchi")
+    comment = models.TextField(blank=True, verbose_name="Izoh")
+    student_name_saved = models.CharField(max_length=200, blank=True, verbose_name="Student nomi (saqlangan)")
+    group_name_saved = models.CharField(max_length=100, blank=True, verbose_name="Guruh nomi (saqlangan)")
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        verbose_name = "Baholash"
+        verbose_name_plural = "Baholashlar"
+        unique_together = ['student', 'group', 'assessment_type']
+        ordering = ['-created_at']
+
+    def __str__(self):
+        return f"{self.student_name_saved} - {self.get_assessment_type_display()}: {self.score}"
+
+
+class TeacherScoreLog(models.Model):
+    teacher = models.ForeignKey(Teacher, on_delete=models.CASCADE, related_name='score_logs')
+    student = models.ForeignKey(Student, on_delete=models.SET_NULL, null=True, blank=True, related_name='teacher_score_logs')
+    group = models.ForeignKey(Group, on_delete=models.SET_NULL, null=True, blank=True)
+    student_name_saved = models.CharField(max_length=200, blank=True, verbose_name="Student nomi (saqlangan)")
+    group_name_saved = models.CharField(max_length=100, blank=True, verbose_name="Guruh nomi (saqlangan)")
+    score_added = models.IntegerField(default=0, verbose_name="Qo'shilgan ball")
+    comment = models.TextField(blank=True, verbose_name="Izoh")
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        verbose_name = "O'qituvchi ball qo'shish"
+        verbose_name_plural = "O'qituvchi ball qo'shishlar"
+        ordering = ['-created_at']
+
+    def save(self, *args, **kwargs):
+        if self.student and not self.student_name_saved:
+            self.student_name_saved = self.student.full_name
+        if self.group and not self.group_name_saved:
+            self.group_name_saved = self.group.name
+        super().save(*args, **kwargs)
+
+    def __str__(self):
+        return f"{self.teacher} -> {self.student_name_saved}: +{self.score_added}"

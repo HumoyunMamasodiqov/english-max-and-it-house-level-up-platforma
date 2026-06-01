@@ -104,6 +104,65 @@
                         </div>
                     </div>
 
+                    <!-- ============ Baholash tizimi ============ -->
+                    <div id="grading" class="mb-6 pt-4 border-t border-gray-100">
+                        <div class="flex items-center justify-between mb-4">
+                            <div>
+                                <h3 class="text-base font-semibold text-gray-900">
+                                    <i class="fas fa-trophy text-amber-500 mr-2"></i> Baholash tizimi
+                                </h3>
+                                <p class="text-xs text-gray-500">Student ballariga qarab past/o'rta/yuqori yorliqlarini ko'rsatish</p>
+                            </div>
+                            <label class="relative inline-flex items-center cursor-pointer">
+                                <input type="checkbox" name="grading_enabled" class="sr-only peer" 
+                                       id="gradingEnabled" {% if config.grading_enabled %}checked{% endif %}>
+                                <div class="w-11 h-6 bg-gray-200 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-amber-500"></div>
+                            </label>
+                        </div>
+                        
+                        <div id="gradingSettings" class="{% if not config.grading_enabled %}hidden{% endif %} space-y-4">
+                            <div class="grid grid-cols-2 gap-4">
+                                <div>
+                                    <label class="block text-xs font-medium text-gray-700 mb-1">Past yorlig'i</label>
+                                    <input type="text" name="label_low" value="{{ config.label_low|default:'Past' }}" 
+                                           class="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm">
+                                </div>
+                                <div>
+                                    <label class="block text-xs font-medium text-gray-700 mb-1">Past/o'rta chegarasi (%)</label>
+                                    <input type="number" name="low_threshold" value="{{ config.low_threshold|default:40 }}" 
+                                           min="1" max="99" class="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm">
+                                </div>
+                            </div>
+                            <div class="grid grid-cols-2 gap-4">
+                                <div>
+                                    <label class="block text-xs font-medium text-gray-700 mb-1">O'rta yorlig'i</label>
+                                    <input type="text" name="label_medium" value="{{ config.label_medium|default:'O\'rta' }}" 
+                                           class="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm">
+                                </div>
+                                <div>
+                                    <label class="block text-xs font-medium text-gray-700 mb-1">O'rta/yuqori chegarasi (%)</label>
+                                    <input type="number" name="high_threshold" value="{{ config.high_threshold|default:70 }}" 
+                                           min="1" max="99" class="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm">
+                                </div>
+                            </div>
+                            <div class="grid grid-cols-2 gap-4">
+                                <div>
+                                    <label class="block text-xs font-medium text-gray-700 mb-1">Yuqori yorlig'i</label>
+                                    <input type="text" name="label_high" value="{{ config.label_high|default:'Yuqori' }}" 
+                                           class="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm">
+                                </div>
+                                <div class="flex items-end">
+                                    <div class="w-full bg-gray-50 border border-gray-200 rounded-lg p-3 text-xs text-gray-600">
+                                        <i class="fas fa-info-circle mr-1"></i>
+                                        Masalan: &lt; {{ config.low_threshold|default:40 }}% → <span class="text-red-600">{{ config.label_low|default:'Past' }}</span>,
+                                        {{ config.low_threshold|default:40 }}-{{ config.high_threshold|default:70 }}% → <span class="text-yellow-600">{{ config.label_medium|default:"O'rta" }}</span>,
+                                        &gt; {{ config.high_threshold|default:70 }}% → <span class="text-green-600">{{ config.label_high|default:'Yuqori' }}</span>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
                     <div class="flex justify-between items-center pt-4 border-t border-gray-100">
                         <div class="text-sm text-gray-500">
                             <i class="fas fa-info-circle mr-1"></i> Har bir talaba turlicha savollar oladi
@@ -331,6 +390,38 @@ function getCookie(name) {
         }
     }
     return cookieValue;
+}
+
+// Baholash tizimini yoqish/o'chirish
+document.getElementById('gradingEnabled')?.addEventListener('change', function() {
+    let settings = document.getElementById('gradingSettings');
+    if (this.checked) {
+        settings.classList.remove('hidden');
+    } else {
+        settings.classList.add('hidden');
+    }
+});
+
+// Real-time preview update
+document.querySelectorAll('#gradingSettings input').forEach(function(input) {
+    input.addEventListener('input', function() {
+        updateGradePreview();
+    });
+});
+
+function updateGradePreview() {
+    let low = document.querySelector('[name="low_threshold"]')?.value || 40;
+    let high = document.querySelector('[name="high_threshold"]')?.value || 70;
+    let labelLow = document.querySelector('[name="label_low"]')?.value || 'Past';
+    let labelMed = document.querySelector('[name="label_medium"]')?.value || "O'rta";
+    let labelHigh = document.querySelector('[name="label_high"]')?.value || 'Yuqori';
+    let infoDiv = document.querySelector('#gradingSettings .bg-gray-50.border');
+    if (infoDiv) {
+        infoDiv.innerHTML = `<i class="fas fa-info-circle mr-1"></i>
+            Masalan: &lt; ${low}% → <span class="text-red-600">${labelLow}</span>,
+            ${low}-${high}% → <span class="text-yellow-600">${labelMed}</span>,
+            &gt; ${high}% → <span class="text-green-600">${labelHigh}</span>`;
+    }
 }
 
 // Form submit qilganda

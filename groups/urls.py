@@ -130,4 +130,25 @@ urlpatterns = [
 
     # STATISTIKA
     path('quiz/statistics/<int:group_id>/', views.quiz_statistics, name='quiz_statistics'),
+
+    # QURILMA NAZORATI
+    path('device/monitor/', views.device_monitor, name='device_monitor'),
+    path('device/history/', views.device_history, name='device_history'),
+    path('device/register/', views.device_register_api, name='device_register'),
+    path('device/offline/', views.device_offline_api, name='device_offline'),
+    path('device/rename/', views.device_rename_api, name='device_rename'),
+    path('device/delete/', views.device_delete_api, name='device_delete'),
+
+    # O'QITUVCHI
+    path('teacher/login/', views.teacher_login, name='teacher_login'),
+    path('teacher/panel/', views.teacher_panel, name='teacher_panel'),
+    path('teacher/group/<int:group_id>/', views.teacher_group_view, name='teacher_group_view'),
+    path('teacher/score-logs/', views.teacher_score_logs, name='teacher_score_logs'),
+    path('teacher/list/', views.teacher_list, name='teacher_list'),
+    path('teacher/add/', views.teacher_add, name='teacher_add'),
+    path('teacher/edit/<int:teacher_id>/', views.teacher_edit, name='teacher_edit'),
+    path('teacher/delete/<int:teacher_id>/', views.teacher_delete, name='teacher_delete'),
+
+    # ARXIV
+    path('results/archive/', views.results_archive, name='results_archive'),
 ]
