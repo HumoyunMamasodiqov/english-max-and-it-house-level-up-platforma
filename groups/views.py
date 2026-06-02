@@ -5712,3 +5712,237 @@ def admin_save_assessment_api(request):
         })
     except Exception as e:
         return JsonResponse({'success': False, 'message': str(e)})
+
+
+@login_required
+@user_passes_test(is_admin_user)
+def admin_questions_import(request):
+    categories = Category.objects.all()
+    errors = []
+    success_count = 0
+    skip_count = 0
+
+    if request.method == 'POST':
+        file = request.FILES.get('file')
+        question_type_default = request.POST.get('question_type', '')
+        category_id = request.POST.get('category', '')
+
+        if not file:
+            messages.error(request, "Iltimos, fayl tanlang!")
+            return render(request, 'groups/admin_questions_import.html', {'categories': categories})
+
+        ext = file.name.split('.')[-1].lower()
+
+        try:
+            if ext in ('xlsx', 'xls'):
+                success_count, skip_count, errors = import_from_excel(
+                    file, category_id, question_type_default
+                )
+            elif ext == 'docx':
+                success_count, skip_count, errors = import_from_docx(
+                    file, category_id, question_type_default
+                )
+            else:
+                messages.error(request, "Faqat .xlsx, .xls yoki .docx fayllar qabul qilinadi!")
+                return render(request, 'groups/admin_questions_import.html', {'categories': categories})
+
+            if success_count > 0:
+                messages.success(request, f"✅ {success_count} ta savol muvaffaqiyatli import qilindi!")
+            if skip_count > 0:
+                messages.warning(request, f"⚠️ {skip_count} ta savol o'tkazib yuborildi (noto'g'ri ma'lumot).")
+            if errors:
+                for err in errors[:20]:
+                    messages.error(request, err)
+
+        except Exception as e:
+            messages.error(request, f"Xatolik: {str(e)}")
+
+        return redirect('admin_questions_import')
+
+    return render(request, 'groups/admin_questions_import.html', {
+        'categories': categories,
+    })
+
+
+def import_from_excel(file, category_id, question_type_default):
+    import openpyxl
+    wb = openpyxl.load_workbook(file, read_only=True)
+    ws = wb.active
+    success_count = 0
+    skip_count = 0
+    errors = []
+
+    rows = list(ws.iter_rows(values_only=True))
+    if not rows:
+        return 0, 0, ["Fayl bo'sh"]
+
+    header = [str(h).strip().lower() if h else '' for h in rows[0]]
+    data_rows = rows[1:]
+
+    for idx, row in enumerate(data_rows, start=2):
+        if not any(row):
+            continue
+        try:
+            row_dict = {}
+            for col_idx, val in enumerate(header):
+                if col_idx < len(row):
+                    row_dict[val] = str(row[col_idx]).strip() if row[col_idx] is not None else ''
+
+            q_type = row_dict.get('savol_turi', '') or row_dict.get('question_type', '') or question_type_default
+            cat_name = row_dict.get('kategoriya', '') or row_dict.get('category', '')
+            question_text = row_dict.get('savol_matni', '') or row_dict.get('question_text', '')
+            correct_answer = row_dict.get('togri_javob', '') or row_dict.get('correct_answer', '') or row_dict.get("to'g'ri_javob", '')
+            scrambled = row_dict.get('variantlar', '') or row_dict.get('scrambled_words', '') or row_dict.get('options', '')
+            correct_sentence = row_dict.get('togri_gap', '') or row_dict.get('correct_sentence', '') or row_dict.get("to'g'ri_gap", '')
+            points_str = row_dict.get('ball', '') or row_dict.get('points', '')
+            points = int(points_str) if points_str else 1
+
+            if not q_type:
+                skip_count += 1
+                errors.append(f"Qator {idx}: Savol turi ko'rsatilmagan")
+                continue
+
+            if cat_name:
+                category = Category.objects.filter(name__iexact=cat_name).first()
+                if not category:
+                    skip_count += 1
+                    errors.append(f"Qator {idx}: Kategoriya topilmadi - '{cat_name}'")
+                    continue
+            elif category_id:
+                category = Category.objects.filter(id=category_id).first()
+                if not category:
+                    skip_count += 1
+                    errors.append(f"Qator {idx}: Kategoriya topilmadi (ID: {category_id})")
+                    continue
+            else:
+                skip_count += 1
+                errors.append(f"Qator {idx}: Kategoriya ko'rsatilmagan")
+                continue
+
+            if not question_text and q_type not in ('matching',):
+                skip_count += 1
+                errors.append(f"Qator {idx}: Savol matni kiritilmagan")
+                continue
+
+            if not correct_answer and q_type in ('fill_blank', 'fill_blank_no_word', 'multiple_choice', 'underline_correct', 'complete_the_words'):
+                skip_count += 1
+                errors.append(f"Qator {idx}: To'g'ri javob kiritilmagan")
+                continue
+
+            valid_types = [t[0] for t in QuestionType.choices]
+            if q_type not in valid_types:
+                skip_count += 1
+                errors.append(f"Qator {idx}: Noto'g'ri savol turi - '{q_type}'")
+                continue
+
+            kwargs = {
+                'category': category,
+                'question_type': q_type,
+                'question_text': question_text,
+                'correct_answer': correct_answer,
+                'scrambled_words': scrambled,
+                'correct_sentence': correct_sentence,
+                'points': points,
+            }
+
+            if q_type in ('true_false',):
+                if correct_answer.lower() in ('true', 'togri', "to'g'ri", 'ha', 'yes'):
+                    kwargs['correct_answer'] = 'true'
+                elif correct_answer.lower() in ('false', 'notogri', "noto'g'ri", "yo'q", 'no'):
+                    kwargs['correct_answer'] = 'false'
+
+            QuizQuestion.objects.create(**kwargs)
+            success_count += 1
+
+        except Exception as e:
+            skip_count += 1
+            errors.append(f"Qator {idx}: Xatolik - {str(e)}")
+
+    wb.close()
+    return success_count, skip_count, errors
+
+
+def import_from_docx(file, category_id, question_type_default):
+    from docx import Document
+    doc = Document(file)
+    success_count = 0
+    skip_count = 0
+    errors = []
+
+    tables = doc.tables
+    if not tables:
+        return 0, 0, ["Faylda jadval topilmadi"]
+
+    for table_idx, table in enumerate(tables):
+        rows = table.rows
+        if len(rows) < 2:
+            continue
+
+        header = [cell.text.strip().lower() for cell in rows[0].cells]
+        for row_idx in range(1, len(rows)):
+            try:
+                row = rows[row_idx]
+                row_dict = {}
+                for col_idx, h in enumerate(header):
+                    if col_idx < len(row.cells):
+                        row_dict[h] = row.cells[col_idx].text.strip()
+
+                q_type = row_dict.get('savol_turi', '') or row_dict.get('question_type', '') or question_type_default
+                cat_name = row_dict.get('kategoriya', '') or row_dict.get('category', '')
+                question_text = row_dict.get('savol_matni', '') or row_dict.get('question_text', '')
+                correct_answer = row_dict.get('togri_javob', '') or row_dict.get('correct_answer', '') or row_dict.get("to'g'ri_javob", '')
+                scrambled = row_dict.get('variantlar', '') or row_dict.get('scrambled_words', '') or row_dict.get('options', '')
+                correct_sentence = row_dict.get('togri_gap', '') or row_dict.get('correct_sentence', '') or row_dict.get("to'g'ri_gap", '')
+                points_str = row_dict.get('ball', '') or row_dict.get('points', '')
+                points = int(points_str) if points_str else 1
+
+                if not q_type:
+                    skip_count += 1
+                    errors.append(f"Jadval {table_idx+1}, qator {row_idx+1}: Savol turi ko'rsatilmagan")
+                    continue
+
+                if cat_name:
+                    category = Category.objects.filter(name__iexact=cat_name).first()
+                    if not category:
+                        skip_count += 1
+                        errors.append(f"Jadval {table_idx+1}, qator {row_idx+1}: Kategoriya topilmadi - '{cat_name}'")
+                        continue
+                elif category_id:
+                    category = Category.objects.filter(id=category_id).first()
+                    if not category:
+                        skip_count += 1
+                        continue
+                else:
+                    skip_count += 1
+                    errors.append(f"Jadval {table_idx+1}, qator {row_idx+1}: Kategoriya ko'rsatilmagan")
+                    continue
+
+                valid_types = [t[0] for t in QuestionType.choices]
+                if q_type not in valid_types:
+                    skip_count += 1
+                    continue
+
+                kwargs = {
+                    'category': category,
+                    'question_type': q_type,
+                    'question_text': question_text,
+                    'correct_answer': correct_answer,
+                    'scrambled_words': scrambled,
+                    'correct_sentence': correct_sentence,
+                    'points': points,
+                }
+
+                if q_type in ('true_false',):
+                    if correct_answer.lower() in ('true', 'togri', "to'g'ri", 'ha', 'yes'):
+                        kwargs['correct_answer'] = 'true'
+                    elif correct_answer.lower() in ('false', 'notogri', "noto'g'ri", "yo'q", 'no'):
+                        kwargs['correct_answer'] = 'false'
+
+                QuizQuestion.objects.create(**kwargs)
+                success_count += 1
+
+            except Exception as e:
+                skip_count += 1
+                errors.append(f"Jadval {table_idx+1}, qator {row_idx+1}: Xatolik - {str(e)}")
+
+    return success_count, skip_count, errors

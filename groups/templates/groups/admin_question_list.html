@@ -75,9 +75,17 @@
                         <span class="ml-2 text-xs text-gray-400">({{ questions|length }} ta)</span>
                     </h3>
                 </div>
-                <a href="{% url 'admin_question_add' %}" class="bg-black hover:bg-gray-800 text-white px-4 py-2 text-sm transition">
-                    + Yangi savol
-                </a>
+                <div class="flex items-center gap-2">
+                    <a href="{% url 'admin_questions_import' %}" class="border border-gray-300 hover:bg-gray-50 text-gray-600 px-4 py-2 text-sm transition">
+                        <svg class="w-4 h-4 inline mr-1" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-8l-4-4m0 0L8 8m4-4v12"></path>
+                        </svg>
+                        Import
+                    </a>
+                    <a href="{% url 'admin_question_add' %}" class="bg-black hover:bg-gray-800 text-white px-4 py-2 text-sm transition">
+                        + Yangi savol
+                    </a>
+                </div>
             </div>
 
             <div class="overflow-x-auto">
