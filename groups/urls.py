@@ -109,7 +109,6 @@ urlpatterns = [
     path('questions-add/', views.admin_question_add, name='admin_question_add'),
     path('questions-edit/<int:pk>/', views.admin_question_edit, name='admin_question_edit'),
     path('questions-delete/<int:pk>/', views.admin_question_delete, name='admin_question_delete'),
-    path('questions-import/', views.admin_questions_import, name='admin_questions_import'),
     # WRITING (Yozma ish) BAHOLASH
     path('writing/review/<int:group_id>/', views.admin_writing_review, name='admin_writing_review'),
     path('writing/grade/<int:result_id>/<int:question_id>/', views.admin_writing_grade_api, name='admin_writing_grade_api'),
