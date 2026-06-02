@@ -1349,6 +1349,7 @@ async function getRemainingTime() {
             const timerEl = document.getElementById('timer');
             if (timerEl) timerEl.innerText = `${mins}:${secs.toString().padStart(2, '0')}`;
         }
+        return data;
     } catch (error) { console.error('Get remaining time error:', error); }
 }
 
@@ -1416,11 +1417,12 @@ if ({{ is_exam_active|yesno:"true,false" }} && !{{ has_completed|yesno:"true,fal
 }
 
 // ============================================================
-// INIT
+// INIT - TIMER: serverdan qolgan vaqtni olib keyin ishga tush
 // ============================================================
 if ({{ config.time_limit|default:0 }} > 0 && {{ is_exam_active|yesno:"true,false" }} && !{{ has_completed|yesno:"true,false" }}) {
-    getRemainingTime();
-    startTimer();
+    getRemainingTime().then(() => {
+        startTimer();
+    });
 }
 
 if (!{{ has_completed|yesno:"true,false" }} && {{ is_exam_active|yesno:"true,false" }}) {
