@@ -513,6 +513,11 @@
         animation: bounce 0.8s ease-in-out infinite;
     }
     
+    /* Print va screenshot oldini olish */
+    @media print {
+        body { display: none; }
+    }
+    
     @media (max-width: 768px) {
         .prev-page, .next-page {
             padding: 12px 20px !important;
@@ -1349,9 +1354,11 @@ if ({{ is_exam_active|yesno:"true,false" }} && !{{ has_completed|yesno:"true,fal
     document.addEventListener('cut', (e) => { e.preventDefault(); });
     document.addEventListener('paste', (e) => { e.preventDefault(); });
 
-    // Block F12, Ctrl+U, Ctrl+S, Ctrl+Shift+I, Ctrl+Shift+J
+    // Block F12, PrintScreen, Ctrl+U, Ctrl+S, Ctrl+P, Ctrl+Shift+I, Ctrl+Shift+J
     document.addEventListener('keydown', (e) => {
         if (e.key === 'F12' ||
+            e.key === 'PrintScreen' ||
+            e.keyCode === 44 ||
             (e.ctrlKey && ['u', 's', 'p'].includes(e.key.toLowerCase())) ||
             (e.ctrlKey && e.shiftKey && ['i', 'j'].includes(e.key.toLowerCase()))) {
             e.preventDefault();

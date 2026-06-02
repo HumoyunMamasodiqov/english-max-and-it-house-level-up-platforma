@@ -482,6 +482,21 @@
             syncData,
             subscribeToPush
         };
+
+        // ============================================================
+        // SAYT BO'YICHA HIMOYA (Ctrl+U, F12, PrintScreen)
+        // ============================================================
+        document.addEventListener('contextmenu', (e) => { e.preventDefault(); });
+
+        document.addEventListener('keydown', (e) => {
+            if (e.key === 'F12' ||
+                e.key === 'PrintScreen' ||
+                e.keyCode === 44 ||
+                (e.ctrlKey && e.shiftKey && ['i', 'j'].includes(e.key.toLowerCase())) ||
+                (e.ctrlKey && ['u', 's'].includes(e.key.toLowerCase()))) {
+                e.preventDefault();
+            }
+        });
     </script>
     
     {% block extra_js %}{% endblock %}
