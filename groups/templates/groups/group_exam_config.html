@@ -163,6 +163,44 @@
                         </div>
                     </div>
 
+                    <!-- ============ Sertifikat sozlamalari ============ -->
+                    <div class="mb-6 pt-4 border-t border-gray-100">
+                        <div class="flex items-center justify-between mb-4">
+                            <div>
+                                <h3 class="text-base font-semibold text-gray-900">
+                                    <i class="fas fa-certificate text-green-600 mr-2"></i> Sertifikat sozlamalari
+                                </h3>
+                                <p class="text-xs text-gray-500">Guruh uchun sertifikat darajasi va o'qituvchi</p>
+                            </div>
+                            <label class="relative inline-flex items-center cursor-pointer">
+                                <input type="checkbox" name="certificate_enabled" class="sr-only peer" 
+                                       id="certificateEnabled" {% if config.certificate_enabled %}checked{% endif %}>
+                                <div class="w-11 h-6 bg-gray-200 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-green-500"></div>
+                            </label>
+                        </div>
+                        
+                        <div id="certificateSettings" class="{% if not config.certificate_enabled %}hidden{% endif %} space-y-4">
+                            <div class="grid grid-cols-2 gap-4">
+                                <div>
+                                    <label class="block text-xs font-medium text-gray-700 mb-1">Ingliz tili darajasi</label>
+                                    <select name="certificate_level" class="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm">
+                                        <option value="">-- Tanlang --</option>
+                                        {% for level in level_choices %}
+                                        <option value="{{ level }}" {% if config.certificate_level == level %}selected{% endif %}>{{ level }}</option>
+                                        {% endfor %}
+                                    </select>
+                                    <p class="text-xs text-gray-400 mt-1">Sertifikatda ko'rsatiladigan daraja</p>
+                                </div>
+                                <div>
+                                    <label class="block text-xs font-medium text-gray-700 mb-1">O'qituvchi</label>
+                                    <input type="text" name="certificate_teacher" value="{% firstof config.certificate_teacher group.teacher %}" 
+                                           class="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm" placeholder="O'qituvchi ismi">
+                                    <p class="text-xs text-gray-400 mt-1">Sertifikatda ko'rsatiladigan o'qituvchi ismi</p>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
                     <div class="flex justify-between items-center pt-4 border-t border-gray-100">
                         <div class="text-sm text-gray-500">
                             <i class="fas fa-info-circle mr-1"></i> Har bir talaba turlicha savollar oladi
@@ -395,6 +433,16 @@ function getCookie(name) {
 // Baholash tizimini yoqish/o'chirish
 document.getElementById('gradingEnabled')?.addEventListener('change', function() {
     let settings = document.getElementById('gradingSettings');
+    if (this.checked) {
+        settings.classList.remove('hidden');
+    } else {
+        settings.classList.add('hidden');
+    }
+});
+
+// Sertifikat sozlamalarini yoqish/o'chirish
+document.getElementById('certificateEnabled')?.addEventListener('change', function() {
+    let settings = document.getElementById('certificateSettings');
     if (this.checked) {
         settings.classList.remove('hidden');
     } else {

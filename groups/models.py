@@ -695,6 +695,19 @@ class GroupExamConfig(models.Model):
     max_audio_plays = models.IntegerField(default=1, verbose_name="Audio necha marta eshitilishi mumkin")
     audio_instruction = models.TextField(blank=True, null=True, verbose_name="Audio ko'rsatmasi")
 
+    # Sertifikat sozlamalari
+    certificate_enabled = models.BooleanField(default=False, verbose_name="Sertifikat berish")
+    certificate_level = models.CharField(
+        max_length=100, blank=True, null=True,
+        verbose_name="Sertifikat darajasi",
+        help_text="Masalan: A1, A2, B1, B2, C1, C2"
+    )
+    certificate_teacher = models.CharField(
+        max_length=200, blank=True, null=True,
+        verbose_name="Sertifikatdagi o'qituvchi ismi",
+        help_text="Bo'sh qoldirilsa, guruh o'qituvchisi ishlatiladi"
+    )
+
     updated_at = models.DateTimeField(auto_now=True)
 
     class Meta:
@@ -826,3 +839,47 @@ class TeacherScoreLog(models.Model):
 
     def __str__(self):
         return f"{self.teacher} -> {self.student_name_saved}: +{self.score_added}"
+
+
+class CertificateSetting(models.Model):
+    background_image = models.ImageField(
+        upload_to='certificate_bg/',
+        verbose_name="Sertifikat fon rasmi"
+    )
+    threshold_percentage = models.IntegerField(
+        default=50,
+        verbose_name="Sertifikat olish uchun minimal ball (%)"
+    )
+    is_active = models.BooleanField(default=True, verbose_name="Faol")
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        verbose_name = "Sertifikat sozlamasi"
+        verbose_name_plural = "Sertifikat sozlamalari"
+
+    def __str__(self):
+        return f"Sertifikat sozlamasi ({self.threshold_percentage}%)"
+
+
+class Certificate(models.Model):
+    student_name = models.CharField(max_length=200, verbose_name="Student ismi")
+    group_name = models.CharField(max_length=100, verbose_name="Guruh nomi")
+    score = models.FloatField(verbose_name="Ball")
+    certificate_file = models.FileField(
+        upload_to='certificates/',
+        verbose_name="Sertifikat fayli"
+    )
+    quiz_result = models.ForeignKey(
+        QuizResult, on_delete=models.SET_NULL, null=True, blank=True,
+        related_name='certificates', verbose_name="Test natijasi"
+    )
+    generated_at = models.DateTimeField(auto_now_add=True, verbose_name="Yaratilgan vaqt")
+    is_archived = models.BooleanField(default=False, verbose_name="Arxivlangan")
+
+    class Meta:
+        verbose_name = "Sertifikat"
+        verbose_name_plural = "Sertifikatlar"
+        ordering = ['-generated_at']
+
+    def __str__(self):
+        return f"{self.student_name} - {self.score}%"

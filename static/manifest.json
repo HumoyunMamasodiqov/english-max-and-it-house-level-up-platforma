@@ -1,0 +1,29 @@
+{
+  "name": "IT House Level Up",
+  "short_name": "IT House",
+  "description": "IT House Level Up - Guruhlar boshqaruvi va onlayn imtihon platformasi",
+  "start_url": "/",
+  "display": "standalone",
+  "theme_color": "#0059ff",
+  "background_color": "#f1f5f9",
+  "orientation": "portrait",
+  "categories": ["education"],
+  "lang": "uz",
+  "icons": [
+    {
+      "src": "/static/icons/icon-72.png",
+      "sizes": "72x72",
+      "type": "image/png"
+    },
+    {
+      "src": "/static/icons/icon-96.png",
+      "sizes": "96x96",
+      "type": "image/png"
+    },
+    {
+      "src": "/static/icons/icon-128.png",
+      "sizes": "128x128",
+      "type": "image/png"
+    }
+  ]
+}

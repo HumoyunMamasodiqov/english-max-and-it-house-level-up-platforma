@@ -5,7 +5,8 @@ from django.contrib.auth.admin import UserAdmin
 from django.contrib.auth.models import User
 from .models import (
     Group, Student, ExamSession, ExamResult, ExamControl, 
-    AdminPassword, Rules, Category, QuizQuestion, Teacher, TeacherScoreLog, AssessmentScore
+    AdminPassword, Rules, Category, QuizQuestion, Teacher, TeacherScoreLog, AssessmentScore,
+    CertificateSetting, Certificate, GroupExamConfig
 )
 
 # forms.py dan import
@@ -505,3 +506,33 @@ def change_to_sentence_arrangement(modeladmin, request, queryset):
 
 # QuizQuestion adminiga actionlar qo'shish
 QuizQuestionAdmin.actions = [delete_selected_questions, change_to_fill_blank, change_to_sentence_arrangement]
+
+
+@admin.register(CertificateSetting)
+class CertificateSettingAdmin(admin.ModelAdmin):
+    list_display = ['threshold_percentage', 'is_active', 'updated_at']
+    list_editable = ['is_active']
+
+
+@admin.register(Certificate)
+class CertificateAdmin(admin.ModelAdmin):
+    list_display = ['student_name', 'group_name', 'score', 'generated_at']
+    list_filter = ['group_name', 'generated_at']
+    search_fields = ['student_name', 'group_name']
+    readonly_fields = ['student_name', 'group_name', 'score', 'certificate_file', 'generated_at']
+
+
+@admin.register(GroupExamConfig)
+class GroupExamConfigAdmin(admin.ModelAdmin):
+    list_display = ['group', 'questions_per_student', 'time_limit', 'certificate_enabled', 'certificate_level']
+    list_filter = ['certificate_enabled', 'certificate_level']
+    search_fields = ['group__name']
+    fieldsets = [
+        ('Asosiy sozlamalar', {'fields': ['group', 'questions_per_student', 'random_order',
+                                          'show_correct_answer', 'time_limit', 'max_attempts',
+                                          'use_category_configs']}),
+        ('Baholash tizimi', {'fields': ['grading_enabled', 'low_threshold', 'high_threshold',
+                                        'label_low', 'label_medium', 'label_high']}),
+        ('Sertifikat', {'fields': ['certificate_enabled', 'certificate_level', 'certificate_teacher']}),
+        ('Audio', {'fields': ['audio_file', 'max_audio_plays', 'audio_instruction']}),
+    ]

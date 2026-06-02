@@ -22,7 +22,8 @@ from .models import (
     Category, GroupCategory, GroupExamConfig, UserExamAttempt,
     CategoryGroupConfig, StudentQuestionHistory,
     ReadingText, ReadingQuestion, StudentAudioPlay,
-    Device, Teacher, TeacherScoreLog, AssessmentScore
+    Device, Teacher, TeacherScoreLog, AssessmentScore,
+    CertificateSetting, Certificate
 )
 from .forms import GroupForm, RegisterForm, LoginForm
 
@@ -1289,6 +1290,11 @@ def quiz_submit(request):
         else:
             print(f"Created new QuizResult with score: {final_score}")
 
+        try:
+            generate_student_certificate(result)
+        except Exception as cert_err:
+            print(f"Certificate generation error: {cert_err}")
+
         return JsonResponse({
             'success': True,
             'message': f'Ball: {final_score}/100',
@@ -1381,13 +1387,21 @@ def get_saved_answers_api(request, group_id):
 @login_required
 @user_passes_test(is_admin_user)
 def quiz_results(request, group_id):
-    if not is_admin_user(request.user):
-        messages.error(request, 'Sizda bu sahifani ko\'rish huquqi yo\'q!')
-        return redirect('home')
-
     from django.db.models import Max, Subquery, OuterRef
 
     group = get_object_or_404(Group, id=group_id)
+
+    # Student o'z natijalarini ko'rishi mumkin
+    if not is_admin_user(request.user):
+        try:
+            student = request.user.student_profile
+            if not student.group or student.group.id != group.id:
+                messages.error(request, 'Sizda bu sahifani ko\'rish huquqi yo\'q!')
+                return redirect('home')
+        except:
+            messages.error(request, 'Sizda bu sahifani ko\'rish huquqi yo\'q!')
+            return redirect('home')
+
     group_name = group.name
 
     # Guruh orqali natijalar (guruh o'chirilsa ham saqlangan)
@@ -1418,7 +1432,8 @@ def quiz_results(request, group_id):
                 'raw_score': raw_score,
                 'last_submitted': result.submitted_at,
                 'total_questions': total_possible,
-                'attempt_count': 1
+                'attempt_count': 1,
+                'last_result_id': result.id,
             }
         else:
             if result.submitted_at > unique_results[student_key]['last_submitted']:
@@ -1429,7 +1444,18 @@ def quiz_results(request, group_id):
                 unique_results[student_key]['raw_score'] = raw_score
                 unique_results[student_key]['last_submitted'] = result.submitted_at
                 unique_results[student_key]['total_questions'] = total_possible
+                unique_results[student_key]['last_result_id'] = result.id
             unique_results[student_key]['attempt_count'] += 1
+
+    # Har bir student uchun sertifikat ID sini olish
+    cert_map = {}
+    for r in all_results:
+        if r.id not in cert_map:
+            cert = Certificate.objects.filter(quiz_result=r).first()
+            if cert:
+                cert_map[r.id] = cert.id
+    for item in unique_results.values():
+        item['cert_id'] = cert_map.get(item.get('last_result_id'))
 
     unique_list = list(unique_results.values())
     total_score = sum(r['last_score'] for r in unique_list) if unique_list else 0
@@ -2435,6 +2461,11 @@ def group_exam_config(request, group_id):
             config.label_low = label_low
             config.label_medium = label_medium
             config.label_high = label_high
+
+            # Sertifikat sozlamalari
+            config.certificate_enabled = request.POST.get('certificate_enabled') == 'on'
+            config.certificate_level = request.POST.get('certificate_level', '').strip()
+            config.certificate_teacher = request.POST.get('certificate_teacher', '').strip()
             config.save()
 
             messages.success(request, '✅ Sozlamalar saqlandi!')
@@ -2444,12 +2475,15 @@ def group_exam_config(request, group_id):
         except Exception as e:
             messages.error(request, f'Xatolik: {str(e)}')
 
+    LEVEL_CHOICES = [ 'English Proficiency Level: A1 (Starter)', 'English Proficiency Level: A1 (Beginner)', 'English Proficiency Level: A2 (Elementary)', 'English Proficiency Level: B1 (Pre-Intermediate)', 'English Proficiency Level: B2 (Intermediate)', 'English Proficiency Level: C1 (Upper-Intermediate)', 'English Proficiency Level: C2 (Advanced)']
+
     context = {
         'group': group,
         'config': config,
         'total_questions': total_questions,
         'group_categories': group_categories,
         'category_configs': category_configs,
+        'level_choices': LEVEL_CHOICES,
     }
     return render(request, 'groups/group_exam_config.html', context)
 
@@ -4221,6 +4255,247 @@ def admin_question_delete_api(request, pk):
     except Exception as e:
         return JsonResponse({'success': False, 'message': str(e)})
 
+
+# ========================
+# SERTIFIKAT VIEWLARI
+# ========================
+
+@login_required
+@user_passes_test(is_admin_user)
+def certificate_settings(request):
+    setting = CertificateSetting.objects.first()
+    certificates = Certificate.objects.all()[:50]
+
+    if request.method == 'POST':
+        threshold = request.POST.get('threshold_percentage', 50)
+        bg_image = request.FILES.get('background_image')
+
+        if not setting:
+            setting = CertificateSetting.objects.create(
+                threshold_percentage=threshold,
+                is_active=True
+            )
+        else:
+            setting.threshold_percentage = threshold
+
+        if bg_image:
+            setting.background_image = bg_image
+
+        setting.save()
+        messages.success(request, "Sertifikat sozlamalari saqlandi!")
+        return redirect('certificate_settings')
+
+    context = {
+        'setting': setting,
+        'certificates': certificates,
+    }
+    return render(request, 'groups/certificate_settings.html', context)
+
+
+@login_required
+@user_passes_test(is_admin_user)
+def certificate_list(request):
+    group_id = request.GET.get('group_id')
+    certificates = Certificate.objects.filter(is_archived=False)
+
+    if group_id:
+        group = get_object_or_404(Group, id=group_id)
+        certificates = certificates.filter(group_name=group.name)
+
+    groups = Group.objects.all()
+
+    if request.method == 'POST':
+        cert_ids = request.POST.getlist('cert_ids')
+        action = request.POST.get('action')
+        count = len(cert_ids)
+        if count > 0:
+            certs = Certificate.objects.filter(id__in=cert_ids)
+            if action == 'archive':
+                certs.update(is_archived=True)
+                messages.success(request, f"{count} ta sertifikat arxivlandi!")
+            elif action == 'unarchive':
+                certs.update(is_archived=False)
+                messages.success(request, f"{count} ta sertifikat arxivdan chiqarildi!")
+            elif action == 'delete':
+                certs.delete()
+                messages.success(request, f"{count} ta sertifikat o'chirildi!")
+        return redirect(request.path + ('?group_id=' + group_id if group_id else ''))
+
+    context = {
+        'certificates': certificates,
+        'groups': groups,
+        'selected_group_id': int(group_id) if group_id else None,
+    }
+    return render(request, 'groups/certificate_list.html', context)
+
+
+@login_required
+@user_passes_test(is_admin_user)
+def certificate_archive(request):
+    group_id = request.GET.get('group_id')
+    certificates = Certificate.objects.filter(is_archived=True)
+
+    if group_id:
+        group = get_object_or_404(Group, id=group_id)
+        certificates = certificates.filter(group_name=group.name)
+
+    groups = Group.objects.all()
+
+    if request.method == 'POST':
+        cert_ids = request.POST.getlist('cert_ids')
+        action = request.POST.get('action')
+        count = len(cert_ids)
+        if count > 0:
+            certs = Certificate.objects.filter(id__in=cert_ids)
+            if action == 'unarchive':
+                certs.update(is_archived=False)
+                messages.success(request, f"{count} ta sertifikat arxivdan chiqarildi!")
+            elif action == 'delete':
+                certs.delete()
+                messages.success(request, f"{count} ta sertifikat o'chirildi!")
+        return redirect(request.path + ('?group_id=' + group_id if group_id else ''))
+
+    context = {
+        'certificates': certificates,
+        'groups': groups,
+        'selected_group_id': int(group_id) if group_id else None,
+    }
+    return render(request, 'groups/certificate_archive.html', context)
+
+
+def generate_student_certificate(result):
+    from .certificate_utils import save_certificate_pdf
+
+    setting = CertificateSetting.objects.filter(is_active=True).first()
+    if not setting or not setting.background_image:
+        return None
+
+    threshold = setting.threshold_percentage
+    if result.score < threshold:
+        return None
+
+    group_enabled = False
+    if result.quiz_session and result.quiz_session.group:
+        try:
+            config = result.quiz_session.group.exam_config
+            group_enabled = config.certificate_enabled
+        except:
+            pass
+
+    if not group_enabled:
+        return None
+
+    existing = Certificate.objects.filter(quiz_result=result).first()
+    if existing:
+        return existing
+
+    student_name = result.student_name_saved
+    if not student_name and result.student:
+        student_name = result.student.full_name
+    group_name = result.group_name_saved
+
+    teacher_name = None
+    level = None
+    if result.quiz_session and result.quiz_session.group:
+        group = result.quiz_session.group
+        try:
+            config = group.exam_config
+            teacher_name = config.certificate_teacher or group.teacher
+            level = config.certificate_level
+        except:
+            teacher_name = group.teacher if group.teacher else None
+
+    bg_path = setting.background_image.path
+
+    file_content = save_certificate_pdf(student_name, group_name, teacher_name, level, result.score, bg_path)
+    if file_content is None:
+        return None
+
+    cert = Certificate(
+        student_name=student_name,
+        group_name=group_name,
+        score=result.score,
+        quiz_result=result,
+    )
+    cert.certificate_file.save(file_content.name, file_content, save=True)
+    return cert
+
+
+@login_required
+def view_certificate(request, cert_id):
+    cert = get_object_or_404(Certificate, id=cert_id)
+
+    if not request.user.is_staff and not request.user.is_superuser:
+        if cert.quiz_result and cert.quiz_result.student:
+            if cert.quiz_result.student.user != request.user:
+                messages.error(request, "Bu sertifikatni ko'rish huquqi yo'q!")
+                return redirect('home')
+
+    context = {
+        'cert': cert,
+    }
+    return render(request, 'groups/view_certificate.html', context)
+
+
+@login_required
+@user_passes_test(is_admin_user)
+def generate_certificate_api(request):
+    if request.method != 'POST':
+        return JsonResponse({'success': False, 'message': 'Faqat POST so\'rov!'})
+
+    try:
+        data = json.loads(request.body)
+        result_id = data.get('result_id')
+
+        result = get_object_or_404(QuizResult, id=result_id)
+        cert = generate_student_certificate(result)
+
+        if cert:
+            return JsonResponse({
+                'success': True,
+                'message': 'Sertifikat yaratildi!',
+                'cert_id': cert.id,
+                'cert_url': cert.certificate_file.url,
+            })
+        else:
+            return JsonResponse({
+                'success': False,
+                'message': 'Sertifikat yaratilmadi. Sertifikat sozlamalarini tekshiring yoki ball yetarli emas.'
+            })
+
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        return JsonResponse({'success': False, 'message': str(e)})
+
+
+@login_required
+def my_certificates(request):
+    student = Student.objects.filter(user=request.user).first()
+    if not student:
+        messages.error(request, "Siz student emassiz!")
+        return redirect('home')
+
+    certificates = Certificate.objects.filter(
+        quiz_result__student=student
+    ).order_by('-generated_at')
+
+    context = {
+        'certificates': certificates,
+        'student': student,
+    }
+    return render(request, 'groups/my_certificates.html', context)
+
+
+@login_required
+def sertivkat_view(request):
+    from django.templatetags.static import static
+    setting = CertificateSetting.objects.filter(is_active=True).first()
+    bg_image = None
+    if setting and setting.background_image:
+        bg_image = setting.background_image.url
+    context = {'bg_image': bg_image}
+    return render(request, 'groups/sertivkat.html', context)
 
 
 @staff_member_required
