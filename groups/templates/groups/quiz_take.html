@@ -513,9 +513,20 @@
         animation: bounce 0.8s ease-in-out infinite;
     }
     
-    /* Print va screenshot oldini olish */
+    /* Screenshot, print va select oldini olish */
     @media print {
-        body { display: none; }
+        body { display: none !important; }
+    }
+    body {
+        -webkit-user-select: none;
+        -moz-user-select: none;
+        -ms-user-select: none;
+        user-select: none;
+        -webkit-touch-callout: none;
+    }
+    img, video {
+        -webkit-touch-callout: none;
+        pointer-events: none;
     }
     
     @media (max-width: 768px) {
@@ -1342,35 +1353,58 @@ async function getRemainingTime() {
 }
 
 // ============================================================
-// EXAM SECURITY - HIMOYA
+// EXAM SECURITY - HIMOYA (SCREENSHOT, PRINT, TAB SWITCH)
 // ============================================================
 let handleBeforeUnload = null;
 if ({{ is_exam_active|yesno:"true,false" }} && !{{ has_completed|yesno:"true,false" }}) {
     // Disable right-click
     document.addEventListener('contextmenu', (e) => { e.preventDefault(); });
 
-    // Disable copy, cut, paste
+    // Disable copy, cut, paste, drag, drop
     document.addEventListener('copy', (e) => { e.preventDefault(); });
     document.addEventListener('cut', (e) => { e.preventDefault(); });
     document.addEventListener('paste', (e) => { e.preventDefault(); });
+    document.addEventListener('dragstart', (e) => { e.preventDefault(); });
+    document.addEventListener('drop', (e) => { e.preventDefault(); });
 
-    // Block F12, PrintScreen, Ctrl+U, Ctrl+S, Ctrl+P, Ctrl+Shift+I, Ctrl+Shift+J
+    // Block all screenshot/print/devtools keys
     document.addEventListener('keydown', (e) => {
-        if (e.key === 'F12' ||
+        const blocked = (
+            e.key === 'F12' ||
             e.key === 'PrintScreen' ||
             e.keyCode === 44 ||
+            e.code === 'PrintScreen' ||
             (e.ctrlKey && ['u', 's', 'p'].includes(e.key.toLowerCase())) ||
-            (e.ctrlKey && e.shiftKey && ['i', 'j'].includes(e.key.toLowerCase()))) {
+            (e.ctrlKey && e.shiftKey && ['i', 'j', 'c'].includes(e.key.toLowerCase())) ||
+            (e.metaKey && e.shiftKey && ['i', 'j'].includes(e.key.toLowerCase())) ||
+            (e.altKey && e.key.toLowerCase() === 'f4')
+        );
+        if (blocked) {
             e.preventDefault();
         }
     });
 
-    // Warn on tab switch
+    // Blur detection - window focus yo'qotganda
+    window.addEventListener('blur', () => {
+        if (!isSubmitting && !isBlocked) {
+            console.warn('Test oynasi fokusni yo\'qotdi!');
+        }
+    });
+
+    // visibility change - tab almashganda
     document.addEventListener('visibilitychange', () => {
         if (document.hidden) {
             alert('⚠ Diqqat! Test varaqasidan chiqish mumkin emas. Iltimos, testga qayting.');
         }
     });
+
+    // Screen Capture API ni bloklash
+    if (navigator.mediaDevices && navigator.mediaDevices.getDisplayMedia) {
+        navigator.mediaDevices.getDisplayMedia = function() {
+            alert('⚠ Ekran almashish test vaqtida taqiqlangan!');
+            return Promise.reject(new Error('Ekran almashish bloklandi'));
+        };
+    }
 
     // Warn on page leave / refresh
     handleBeforeUnload = function(e) {
