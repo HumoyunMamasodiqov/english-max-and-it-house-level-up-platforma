@@ -6,10 +6,11 @@
 @media print {
   body { background: white; margin: 0; padding: 0; }
   .no-print { display: none !important; }
-  .cert-img { max-height: 100vh; width: 100%; height: 100%; object-fit: cover; }
+  .cert-img { max-height: 100vh; width: 100%; object-fit: contain; }
   .bg-white { background: white !important; box-shadow: none !important; }
   .min-h-screen { min-height: auto !important; }
 }
+.cert-img { width: 100%; object-fit: contain; }
 </style>
 
 <div class="min-h-screen bg-gray-50">
@@ -17,7 +18,7 @@
     <div class="no-print flex items-center justify-between mb-6">
       <div>
         <h1 class="text-2xl font-bold text-gray-900">Sertifikat</h1>
-        <p class="text-gray-500 text-sm">{{ cert.student_name }} | {{ cert.group_name }}</p>
+        <p class="text-gray-500 text-sm">{{ cert.student_name }} | {{ cert.group_name|default:cert.quiz_result.group_name_saved|default:cert.quiz_result.quiz_session.group.name|default:"-" }}</p>
       </div>
       <div class="flex gap-3">
         <button onclick="window.print()" class="bg-gray-900 hover:bg-gray-800 text-white px-4 py-2 rounded-lg text-sm flex items-center gap-2">
@@ -38,10 +39,10 @@
         <span class="font-medium text-gray-900">{{ cert.student_name }}</span>
         <span class="text-gray-300">|</span>
         <span class="text-gray-500">Guruh:</span>
-        <span class="font-medium text-gray-900">{{ cert.group_name }}</span>
+        <span class="font-medium text-gray-900">{{ cert.group_name|default:cert.quiz_result.group_name_saved|default:cert.quiz_result.quiz_session.group.name|default:"-" }}</span>
         <span class="text-gray-300">|</span>
         <span class="text-gray-500">Ball:</span>
-        <span class="bg-green-100 text-green-700 px-2 py-0.5 rounded-full text-xs font-medium">{{ cert.score }}%</span>
+        <span class="{% if cert.score >= threshold %}bg-green-100 text-green-700{% else %}bg-red-100 text-red-700{% endif %} px-2 py-0.5 rounded-full text-xs font-medium">{{ cert.score }}%</span>
       </div>
       <div class="flex justify-center bg-gray-100 p-4">
         <img src="{{ cert.certificate_file.url }}" alt="Sertifikat" class="cert-img w-full max-w-[1123px] shadow-md rounded-lg">

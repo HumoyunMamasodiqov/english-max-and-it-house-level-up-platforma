@@ -4,6 +4,7 @@ from . import views
 urlpatterns = [
     # ASOSIY SAHIFALAR
     path('', views.home, name='home'),
+    path('sayt-haqida/', views.sayt_haqida, name='sayt_haqida'),
     path('login/', views.user_login, name='login'),
     path('register/', views.user_register, name='register'),
     path('logout/', views.user_logout, name='logout'),
@@ -40,6 +41,8 @@ urlpatterns = [
     
     path('quiz/auto-stop/', views.auto_stop_exam_api, name='auto_stop_exam_api'),
     path('quiz/check-time-expired/', views.check_time_expired_api, name='check_time_expired_api'),
+    
+    
     path('categories/<int:category_id>/questions/', views.category_questions_list, name='category_questions_list'),
     path('categories/<int:category_id>/questions/add/', views.category_question_add, name='category_question_add'),
     path('questions/<int:question_id>/edit/', views.category_question_edit, name='category_question_edit'),
@@ -56,10 +59,17 @@ urlpatterns = [
     path('user/add/', views.student_add, name='student_add'),
     path('user/edit/<int:pk>/', views.student_edit, name='student_edit'),
     path('user/delete/<int:pk>/', views.student_delete, name='student_delete'),
+    path('user/<int:pk>/detail/', views.student_detail, name='student_detail'),
+    path('user/<int:pk>/archive/', views.student_archive, name='student_archive'),
+    path('user/<int:pk>/restore/', views.student_restore, name='student_restore'),
     path('users/bulk-delete/', views.student_bulk_delete, name='student_bulk_delete'),
+    path('users/bulk-archive/', views.student_bulk_archive, name='student_bulk_archive'),
 
     # STUDENT PANEL
     path('student-panel/', views.student_panel, name='student_panel'),
+    path('api/change-group/', views.change_group_api, name='change_group_api'),
+    path('api/accept-rules/', views.accept_rules_api, name='accept_rules_api'),
+
 
     # ADMIN BOSHQARUVI
     path('make-admin/', views.make_admin, name='make_admin'),

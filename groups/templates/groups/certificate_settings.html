@@ -5,7 +5,12 @@
     <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
         <div class="flex items-center justify-between mb-8">
             <div>
-                <h1 class="text-2xl font-bold text-gray-900">Sertifikat sozlamalari</h1>
+                <div class="flex items-center gap-3 mb-1">
+                    <a href="{% url 'admin_panel' %}" class="text-gray-400 hover:text-gray-600 transition">
+                        <i class="fas fa-arrow-left"></i>
+                    </a>
+                    <h1 class="text-2xl font-bold text-gray-900">Sertifikat sozlamalari</h1>
+                </div>
                 <p class="text-gray-500 text-sm mt-1">Sertifikat fon rasmi va chegaraviy ballni sozlash</p>
             </div>
             <a href="{% url 'certificate_list' %}" class="bg-gray-900 hover:bg-gray-800 text-white text-sm px-4 py-2 rounded-lg transition flex items-center gap-2">
@@ -34,8 +39,13 @@
                         <label class="block text-sm font-medium text-gray-700 mb-2">Sertifikat fon rasmi</label>
                         {% if setting and setting.background_image %}
                         <div class="mb-3">
-                            <img src="{{ setting.background_image.url }}" alt="Current background" class="w-full max-h-48 object-contain rounded-lg border">
-                            <p class="text-xs text-gray-400 mt-1">Joriy fon rasmi</p>
+                            <img src="{{ setting.background_image.url }}?t={{ setting.updated_at|date:'U' }}" alt="Current background" class="w-full max-h-48 object-contain rounded-lg border">
+                            <p class="text-xs text-gray-400 mt-1">Joriy fon: <strong>{{ setting.background_image.name }}</strong></p>
+                        </div>
+                        {% else %}
+                        <div class="mb-3 p-8 bg-gray-100 rounded-lg text-center">
+                            <i class="fas fa-image text-gray-300 text-3xl mb-2"></i>
+                            <p class="text-xs text-gray-400">Fon rasmi yuklanmagan</p>
                         </div>
                         {% endif %}
                         <input type="file" name="background_image" accept="image/*" class="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm">

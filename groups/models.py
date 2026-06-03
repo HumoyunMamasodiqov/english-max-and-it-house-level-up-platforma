@@ -40,6 +40,8 @@ class Student(models.Model):
         Group, on_delete=models.SET_NULL, null=True, blank=True,
         related_name='students', verbose_name="Guruh"
     )
+    is_archived = models.BooleanField(default=False, verbose_name="Arxivlangan")
+    rules_accepted_at = models.DateTimeField(null=True, blank=True, verbose_name="Qoidalarni qabul qilgan vaqt")
 
     class Meta:
         verbose_name = "Foydalanuvchi"
@@ -481,7 +483,7 @@ class QuizResult(models.Model):
         return self.score  # 0-100 oralig'ida
 
 class UserExamAttempt(models.Model):
-    student = models.ForeignKey(Student, on_delete=models.CASCADE, related_name='exam_attempts')
+    student = models.ForeignKey(Student, on_delete=models.SET_NULL, null=True, blank=True, related_name='exam_attempts')
     exam_session = models.ForeignKey(
         QuizSession, on_delete=models.CASCADE,
         related_name='attempts', null=True, blank=True
@@ -500,7 +502,8 @@ class UserExamAttempt(models.Model):
 
     def __str__(self):
         status = "Tugallangan" if self.is_completed else "Jarayonda"
-        return f"{self.student.full_name} - #{self.attempt_number} - {status}"
+        name = self.student.full_name if self.student else 'Noma\'lum'
+        return f"{name} - #{self.attempt_number} - {status}"
 
 
 
@@ -659,7 +662,7 @@ class Device(models.Model):
 
 
 class StudentQuestionHistory(models.Model):
-    student = models.ForeignKey(Student, on_delete=models.CASCADE, related_name='question_history')
+    student = models.ForeignKey(Student, on_delete=models.SET_NULL, null=True, blank=True, related_name='question_history')
     category = models.ForeignKey(Category, on_delete=models.CASCADE)
     question = models.ForeignKey(QuizQuestion, on_delete=models.CASCADE)
     seen_at = models.DateTimeField(auto_now_add=True)
@@ -696,7 +699,7 @@ class GroupExamConfig(models.Model):
     audio_instruction = models.TextField(blank=True, null=True, verbose_name="Audio ko'rsatmasi")
 
     # Sertifikat sozlamalari
-    certificate_enabled = models.BooleanField(default=False, verbose_name="Sertifikat berish")
+    certificate_enabled = models.BooleanField(default=True, verbose_name="Sertifikat berish")
     certificate_level = models.CharField(
         max_length=100, blank=True, null=True,
         verbose_name="Sertifikat darajasi",

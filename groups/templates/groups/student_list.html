@@ -11,27 +11,36 @@
             </a>
         </div>
         <div class="bg-white rounded-lg border border-gray-200">
-            <div class="px-6 py-4 border-b border-gray-200 flex justify-between items-center">
-                
-                <div class="flex items-center gap-4">
-                    
-                    <h3 class="text-lg font-medium text-gray-900">
-                        <i class="fas fa-users mr-2 text-gray-600"></i> Foydalanuvchilar ro'yxati
-                    </h3>
-                    <span id="selectedCount" class="text-xs bg-gray-100 text-gray-600 px-2 py-1 rounded-full hidden">0 ta tanlangan</span>
+            <div class="px-6 py-4 border-b border-gray-200">
+                <div class="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">
+                    <div class="flex items-center gap-4">
+                        <h3 class="text-lg font-medium text-gray-900">
+                            <i class="fas fa-users mr-2 text-gray-600"></i> Foydalanuvchilar
+                        </h3>
+                        <span id="selectedCount" class="text-xs bg-gray-100 text-gray-600 px-2 py-1 rounded-full hidden">0 ta tanlangan</span>
+                    </div>
+                    <div class="flex items-center gap-3 w-full sm:w-auto">
+                        <form method="GET" class="relative flex-1 sm:flex-initial">
+                            {% if show_archived %}<input type="hidden" name="archive" value="1">{% endif %}
+                            <input type="text" name="q" value="{{ query }}" placeholder="Qidirish..." class="w-full sm:w-64 pl-9 pr-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:border-gray-400">
+                            <i class="fas fa-search absolute left-3 top-1/2 -translate-y-1/2 text-gray-400 text-sm"></i>
+                        </form>
+                        <a href="{% url 'student_add' %}" class="bg-gray-900 hover:bg-gray-800 text-white text-sm px-4 py-2 rounded-lg transition whitespace-nowrap">
+                            <i class="fas fa-plus mr-1"></i> Qo'shish
+                        </a>
+                    </div>
                 </div>
-                <div class="flex items-center gap-3">
-                    <!-- Ko'p o'chirish tugmasi (dastlab yashirin) -->
-                    
-                    <a href="{% url 'student_add' %}" class="bg-gray-900 hover:bg-gray-800 text-white text-sm px-4 py-2 rounded-lg transition">
-                        <i class="fas fa-plus mr-1"></i> Foydalanuvchi qo'shish
+                <div class="flex items-center gap-3 mt-3">
+                    <a href="{% url 'student_list' %}{% if query %}?q={{ query }}{% endif %}" class="text-sm px-3 py-1.5 rounded-lg transition {% if not show_archived %}bg-gray-900 text-white{% else %}bg-gray-100 text-gray-600 hover:bg-gray-200{% endif %}">
+                        <i class="fas fa-user mr-1"></i> Faol
+                    </a>
+                    <a href="{% url 'student_list' %}?archive=1{% if query %}&q={{ query }}{% endif %}" class="text-sm px-3 py-1.5 rounded-lg transition {% if show_archived %}bg-gray-900 text-white{% else %}bg-gray-100 text-gray-600 hover:bg-gray-200{% endif %}">
+                        <i class="fas fa-archive mr-1"></i> Arxiv
                     </a>
                 </div>
             </div>
             <div class="overflow-x-auto">
-                <form id="bulkDeleteForm" method="post" action="{% url 'student_bulk_delete' %}">
-                    {% csrf_token %}
-                    <table class="w-full">
+                <table class="w-full">
                         <thead class="bg-gray-50">
                             <tr class="text-left text-sm text-gray-500">
                                 <th class="px-6 py-3 w-10">
@@ -43,19 +52,25 @@
                                 <th class="px-6 py-3">Username</th>
                                 <th class="px-6 py-3">Email</th>
                                 <th class="px-6 py-3">Guruh</th>
-                                <th class="px-6 py-3 w-24">Amallar</th>
+                                <th class="px-6 py-3 w-32">Amallar</th>
                             </tr>
                         </thead>
                         <tbody class="divide-y divide-gray-200">
                             {% for student in students %}
-                            <tr class="text-sm hover:bg-gray-50 transition" data-student-id="{{ student.pk }}">
+                            <tr class="text-sm hover:bg-gray-50 transition cursor-pointer" data-student-id="{{ student.pk }}" onclick="toggleCheckbox(this)">
                                 <td class="px-6 py-3">
-                                    <input type="checkbox" name="student_ids" value="{{ student.pk }}" class="student-checkbox rounded border-gray-300 text-gray-700 focus:ring-gray-500">
+                                    <input type="checkbox" name="student_ids" value="{{ student.pk }}" class="student-checkbox rounded border-gray-300 text-gray-700 focus:ring-gray-500" onclick="event.stopPropagation()">
                                 </td>
                                 <td class="px-6 py-3 text-gray-500">{{ forloop.counter }}</td>
-                                <td class="px-6 py-3 text-gray-900">{{ student.user.first_name|default:"-" }}</td>
-                                <td class="px-6 py-3 text-gray-900">{{ student.user.last_name|default:"-" }}</td>
-                                <td class="px-6 py-3 text-gray-600">{{ student.user.username }}</td>
+                                <td class="px-6 py-3">
+                                    <a href="{% url 'student_detail' student.pk %}" class="text-gray-900 hover:text-blue-600 font-medium transition" onclick="event.stopPropagation()">{{ student.user.first_name|default:"-" }}</a>
+                                </td>
+                                <td class="px-6 py-3">
+                                    <a href="{% url 'student_detail' student.pk %}" class="text-gray-900 hover:text-blue-600 transition" onclick="event.stopPropagation()">{{ student.user.last_name|default:"-" }}</a>
+                                </td>
+                                <td class="px-6 py-3">
+                                    <a href="{% url 'student_detail' student.pk %}" class="text-gray-600 hover:text-blue-600 transition" onclick="event.stopPropagation()">{{ student.user.username }}</a>
+                                </td>
                                 <td class="px-6 py-3 text-gray-500">{{ student.user.email|default:"-" }}</td>
                                 <td class="px-6 py-3">
                                     {% if student.group %}
@@ -68,10 +83,19 @@
                                 </td>
                                 <td class="px-6 py-3">
                                     <div class="flex items-center space-x-2">
-                                        <a href="{% url 'student_edit' student.pk %}" class="text-gray-500 hover:text-gray-700 transition" title="Tahrirlash">
-                                            <i class="fas fa-edit"></i>
+                                        <a href="{% url 'student_detail' student.pk %}" class="text-blue-500 hover:text-blue-700 transition" title="Profil" onclick="event.stopPropagation()">
+                                            <i class="fas fa-user-circle"></i>
                                         </a>
-                                        <button type="button" onclick="confirmSingleDelete({{ student.pk }}, '{{ student.user.get_full_name|default:student.user.username }}')" class="text-red-400 hover:text-red-600 transition" title="O'chirish">
+                                        {% if show_archived %}
+                                        <a href="{% url 'student_restore' student.pk %}" class="text-green-500 hover:text-green-700 transition" title="Arxivdan chiqarish" onclick="event.stopPropagation()">
+                                            <i class="fas fa-undo"></i>
+                                        </a>
+                                        {% else %}
+                                        <a href="{% url 'student_archive' student.pk %}" class="text-amber-500 hover:text-amber-700 transition" title="Arxivga olish" onclick="event.stopPropagation()">
+                                            <i class="fas fa-archive"></i>
+                                        </a>
+                                        {% endif %}
+                                        <button type="button" onclick="event.stopPropagation(); confirmSingleDelete({{ student.pk }}, '{{ student.user.get_full_name|default:student.user.username }}')" class="text-red-400 hover:text-red-600 transition" title="O'chirish">
                                             <i class="fas fa-trash-alt"></i>
                                         </button>
                                     </div>
@@ -92,7 +116,6 @@
                             {% endfor %}
                         </tbody>
                     </table>
-                </form>
             </div>
             
             <!-- Bottom bar - Telegram uslubida -->
@@ -105,11 +128,14 @@
                             </div>
                             <span class="text-sm text-gray-600">ta foydalanuvchi tanlandi</span>
                         </div>
-                        <div class="flex items-center gap-3">
-                            <button id="cancelSelection" class="px-4 py-2 text-gray-500 hover:text-gray-700 transition">
+                        <div class="flex items-center gap-2">
+                            <button id="cancelSelection" class="px-4 py-2 text-gray-500 hover:text-gray-700 transition text-sm">
                                 <i class="fas fa-times mr-1"></i> Bekor qilish
                             </button>
-                            <button id="confirmBulkDelete" class="px-4 py-2 bg-red-500 hover:bg-red-600 text-white rounded-lg transition">
+                            <button id="confirmBulkArchive" class="px-4 py-2 bg-amber-500 hover:bg-amber-600 text-white rounded-lg transition text-sm {% if show_archived %}hidden{% endif %}">
+                                <i class="fas fa-archive mr-1"></i> Arxivlash
+                            </button>
+                            <button id="confirmBulkDelete" class="px-4 py-2 bg-red-500 hover:bg-red-600 text-white rounded-lg transition text-sm">
                                 <i class="fas fa-trash-alt mr-1"></i> O'chirish
                             </button>
                         </div>
@@ -125,38 +151,58 @@
 <script src="https://cdn.jsdelivr.net/npm/sweetalert2@11"></script>
 
 <script>
-// DOM elementlari
+function getCookie(name) {
+    let cookieValue = null;
+    if (document.cookie && document.cookie !== '') {
+        const cookies = document.cookie.split(';');
+        for (let i = 0; i < cookies.length; i++) {
+            const cookie = cookies[i].trim();
+            if (cookie.substring(0, name.length + 1) === (name + '=')) {
+                cookieValue = decodeURIComponent(cookie.substring(name.length + 1));
+                break;
+            }
+        }
+    }
+    return cookieValue;
+}
+
+function toggleCheckbox(row) {
+    const checkbox = row.querySelector('.student-checkbox');
+    if (checkbox) {
+        checkbox.checked = !checkbox.checked;
+        updateSelectionCount();
+    }
+}
+
 const selectAllCheckbox = document.getElementById('selectAll');
 const studentCheckboxes = document.querySelectorAll('.student-checkbox');
-const bulkDeleteBtn = document.getElementById('bulkDeleteBtn');
 const bottomBar = document.getElementById('bottomBar');
 const bottomBarCount = document.getElementById('bottomBarCount');
 const cancelSelection = document.getElementById('cancelSelection');
 const confirmBulkDelete = document.getElementById('confirmBulkDelete');
+const confirmBulkArchive = document.getElementById('confirmBulkArchive');
 const selectedCountSpan = document.getElementById('selectedCount');
-const bulkDeleteForm = document.getElementById('bulkDeleteForm');
 
-// Tanlanganlar sonini yangilash
+function getSelectedIds() {
+    return Array.from(document.querySelectorAll('.student-checkbox:checked')).map(cb => cb.value);
+}
+
 function updateSelectionCount() {
     const checkedBoxes = document.querySelectorAll('.student-checkbox:checked');
     const count = checkedBoxes.length;
     
-    // Bottom barni ko'rsatish/yashirish
     if (count > 0) {
         bottomBar.classList.remove('translate-y-full');
         bottomBar.classList.add('translate-y-0');
-        bulkDeleteBtn.classList.remove('hidden');
         selectedCountSpan.classList.remove('hidden');
         selectedCountSpan.textContent = `${count} ta tanlangan`;
         bottomBarCount.textContent = count;
     } else {
         bottomBar.classList.add('translate-y-full');
         bottomBar.classList.remove('translate-y-0');
-        bulkDeleteBtn.classList.add('hidden');
         selectedCountSpan.classList.add('hidden');
     }
     
-    // "Hammasini tanlash" checkbox holati
     if (selectAllCheckbox) {
         const totalCheckboxes = studentCheckboxes.length;
         const checkedCount = document.querySelectorAll('.student-checkbox:checked').length;
@@ -174,80 +220,72 @@ function updateSelectionCount() {
     }
 }
 
-// Hammasini tanlash/ochirish
+function submitBulkAction(url, actionLabel) {
+    const ids = getSelectedIds();
+    if (ids.length === 0) return;
+    
+    Swal.fire({
+        title: `${ids.length} ta foydalanuvchini ${actionLabel}`,
+        text: `${actionLabel}ni tasdiqlaysizmi?`,
+        icon: 'warning',
+        showCancelButton: true,
+        confirmButtonColor: actionLabel === 'arxivlash' ? '#d97706' : '#dc2626',
+        cancelButtonColor: '#6b7280',
+        confirmButtonText: `Ha, ${actionLabel}`,
+        cancelButtonText: 'Bekor qilish',
+        background: '#fff',
+        customClass: { popup: 'rounded-xl' }
+    }).then((result) => {
+        if (result.isConfirmed) {
+            Swal.fire({
+                title: `${actionLabel}moqda...`,
+                text: 'Iltimos kuting',
+                allowOutsideClick: false,
+                didOpen: () => Swal.showLoading()
+            });
+            
+            fetch(url, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/x-www-form-urlencoded',
+                    'X-CSRFToken': getCookie('csrftoken')
+                },
+                body: 'student_ids=' + ids.map(id => encodeURIComponent(id)).join('&')
+            }).then(() => {
+                window.location.reload();
+            });
+        }
+    });
+}
+
 if (selectAllCheckbox) {
     selectAllCheckbox.addEventListener('change', function() {
-        const isChecked = this.checked;
-        studentCheckboxes.forEach(checkbox => {
-            checkbox.checked = isChecked;
-        });
+        studentCheckboxes.forEach(cb => cb.checked = this.checked);
         updateSelectionCount();
     });
 }
 
-// Har bir checkbox uchun event
-studentCheckboxes.forEach(checkbox => {
-    checkbox.addEventListener('change', updateSelectionCount);
-});
+studentCheckboxes.forEach(cb => cb.addEventListener('change', updateSelectionCount));
 
-// Tanlovni bekor qilish
 cancelSelection.addEventListener('click', function() {
-    studentCheckboxes.forEach(checkbox => {
-        checkbox.checked = false;
-    });
+    studentCheckboxes.forEach(cb => cb.checked = false);
     updateSelectionCount();
 });
 
-// O'chirish tugmasi (bottom bardagi)
 confirmBulkDelete.addEventListener('click', function() {
-    const checkedBoxes = document.querySelectorAll('.student-checkbox:checked');
-    const count = checkedBoxes.length;
-    const studentNames = [];
-    
-    checkedBoxes.forEach(checkbox => {
-        const row = checkbox.closest('tr');
-        const firstName = row.cells[2]?.textContent.trim() || '-';
-        const lastName = row.cells[3]?.textContent.trim() || '-';
-        const fullName = `${firstName} ${lastName}`.trim();
-        studentNames.push(fullName || 'Nomsiz foydalanuvchi');
-    });
-    
-    Swal.fire({
-        title: `${count} ta foydalanuvchini o'chirish`,
-        html: `
-            <div class="text-left">
-                <p class="mb-3">Quyidagi foydalanuvchilar o'chiriladi:</p>
-                <div class="max-h-40 overflow-y-auto bg-gray-50 rounded-lg p-3">
-                    ${studentNames.map(name => `<div class="text-sm py-1">• ${name}</div>`).join('')}
-                </div>
-                <p class="text-red-500 text-sm mt-3 font-semibold">⚠️ Bu amalni qaytarib bo'lmaydi!</p>
-            </div>
-        `,
-        icon: 'warning',
-        showCancelButton: true,
-        confirmButtonColor: '#dc2626',
-        cancelButtonColor: '#6b7280',
-        confirmButtonText: 'Ha, o\'chirish',
-        cancelButtonText: 'Bekor qilish',
-        background: '#fff',
-        customClass: {
-            popup: 'rounded-xl'
-        }
-    }).then((result) => {
-        if (result.isConfirmed) {
-            bulkDeleteForm.submit();
-        }
-    });
+    submitBulkAction('{% url "student_bulk_delete" %}', 'o\'chirish');
 });
 
-// Bitta foydalanuvchini o'chirish (Telegram uslubida)
+if (confirmBulkArchive) {
+    confirmBulkArchive.addEventListener('click', function() {
+        submitBulkAction('{% url "student_bulk_archive" %}', 'arxivlash');
+    });
+}
+
 function confirmSingleDelete(studentId, studentName) {
     Swal.fire({
         title: `${studentName}ni o'chirish`,
-        html: `
-            <p class="text-gray-600">Bu foydalanuvchini o'chirmoqchimisiz?</p>
-            <p class="text-red-500 text-sm mt-2">⚠️ Bu amalni qaytarib bo'lmaydi!</p>
-        `,
+        html: `<p class="text-gray-600">Bu foydalanuvchini o'chirmoqchimisiz?</p><p class="text-red-500 text-sm mt-2">⚠️ Bu amalni qaytarib bo'lmaydi!</p>`,
         icon: 'question',
         showCancelButton: true,
         confirmButtonColor: '#dc2626',
@@ -255,42 +293,24 @@ function confirmSingleDelete(studentId, studentName) {
         confirmButtonText: 'Ha, o\'chirish',
         cancelButtonText: 'Bekor qilish',
         background: '#fff',
-        customClass: {
-            popup: 'rounded-xl'
-        }
+        customClass: { popup: 'rounded-xl' }
     }).then((result) => {
         if (result.isConfirmed) {
-            // Single delete uchun form yaratish
             const form = document.createElement('form');
             form.method = 'POST';
             form.action = `/user/delete/${studentId}/`;
-            const csrfToken = document.createElement('input');
-            csrfToken.type = 'hidden';
-            csrfToken.name = 'csrfmiddlewaretoken';
-            csrfToken.value = '{{ csrf_token }}';
-            form.appendChild(csrfToken);
+            const csrf = document.createElement('input');
+            csrf.type = 'hidden';
+            csrf.name = 'csrfmiddlewaretoken';
+            csrf.value = '{{ csrf_token }}';
+            form.appendChild(csrf);
             document.body.appendChild(form);
             form.submit();
         }
     });
 }
 
-// Bulk delete form submit qilishdan oldin loader ko'rsatish
-bulkDeleteForm.addEventListener('submit', function(e) {
-    Swal.fire({
-        title: 'O\'chirilmoqda...',
-        text: 'Iltimos kuting',
-        allowOutsideClick: false,
-        didOpen: () => {
-            Swal.showLoading();
-        }
-    });
-});
-
-// Sahifa yuklanganda tanlanganlar sonini tekshirish
-document.addEventListener('DOMContentLoaded', function() {
-    updateSelectionCount();
-});
+document.addEventListener('DOMContentLoaded', updateSelectionCount);
 </script>
 
 <style>

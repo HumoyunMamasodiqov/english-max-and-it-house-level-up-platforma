@@ -67,7 +67,7 @@
                                 Studentlar uchun imtihon linki:
                             </p>
                             <code class="text-xs break-all mt-1 block bg-white p-2 rounded">
-                                {{ request.build_absolute_uri }}{% url 'student_exam' group.id %}
+                                {{ request.build_absolute_uri }}{% url 'quiz_take' group.id %}
                             </code>
                         </div>
                     </div>
@@ -164,7 +164,7 @@ $(document).ready(function() {
     // Statusni tekshirish
     function checkExamStatus() {
         $.ajax({
-            url: '{% url "check_exam_status" %}',
+            url: '{% url "quiz_check_status" %}',
             method: 'POST',
             contentType: 'application/json',
             data: JSON.stringify({
@@ -176,8 +176,10 @@ $(document).ready(function() {
                     $('#stopExamBtn').prop('disabled', false);
                     
                     // Timerni yangilash
-                    if (data.started_at) {
-                        $('#timer').text(data.started_at);
+                    if (data.remaining_time !== null && data.remaining_time !== undefined) {
+                        const mins = Math.floor(data.remaining_time / 60);
+                        const secs = data.remaining_time % 60;
+                        $('#timer').text(mins + ':' + String(secs).padStart(2, '0'));
                     }
                 } else {
                     $('#startExamBtn').prop('disabled', false);
@@ -191,7 +193,7 @@ $(document).ready(function() {
     // Start tugmasi
     $('#startExamBtn').click(function() {
         $.ajax({
-            url: '{% url "start_exam" %}',
+            url: '{% url "start_exam_api" %}',
             method: 'POST',
             contentType: 'application/json',
             data: JSON.stringify({
@@ -212,7 +214,7 @@ $(document).ready(function() {
     $('#stopExamBtn').click(function() {
         if (confirm('Imtihonni to\'xtatmoqchimisiz?')) {
             $.ajax({
-                url: '{% url "stop_exam" %}',
+                url: '{% url "stop_exam_api" %}',
                 method: 'POST',
                 contentType: 'application/json',
                 data: JSON.stringify({

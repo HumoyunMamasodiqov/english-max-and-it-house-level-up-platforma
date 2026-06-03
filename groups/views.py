@@ -40,7 +40,11 @@ def is_superuser(user):
 def get_item(dictionary, key):
     if dictionary is None:
         return ''
-    return dictionary.get(str(key), '')
+    # q_ prefiksli kalitlarni ham tekshirish
+    result = dictionary.get(str(key), '')
+    if result == '':
+        result = dictionary.get(f'q_{key}', '')
+    return result
 
 
 @register.filter
@@ -108,6 +112,10 @@ def get_correct_answer_display(question):
 
 def home(request):
     return render(request, 'groups/home.html')
+
+
+def sayt_haqida(request):
+    return render(request, 'groups/sayt_haqida.html')
 
 
 def user_login(request):
@@ -288,8 +296,26 @@ def group_delete(request, pk):
 @login_required
 @user_passes_test(is_admin_user)
 def student_list(request):
-    students = Student.objects.all().select_related('user', 'group')
-    return render(request, 'groups/student_list.html', {'students': students})
+    query = request.GET.get('q', '').strip()
+    archive_filter = request.GET.get('archive', '0')
+    show_archived = archive_filter == '1'
+
+    if show_archived:
+        students = Student.objects.filter(is_archived=True).select_related('user', 'group')
+    else:
+        students = Student.objects.filter(is_archived=False).select_related('user', 'group')
+
+    if query:
+        students = students.filter(
+            Q(user__username__icontains=query) |
+            Q(user__first_name__icontains=query) |
+            Q(user__last_name__icontains=query) |
+            Q(user__email__icontains=query) |
+            Q(group__name__icontains=query)
+        )
+    return render(request, 'groups/student_list.html', {
+        'students': students, 'query': query, 'show_archived': show_archived
+    })
 
 
 @login_required
@@ -364,6 +390,61 @@ def student_edit(request, pk):
 
 @login_required
 @user_passes_test(is_admin_user)
+def student_detail(request, pk):
+    student = get_object_or_404(Student.objects.select_related('user', 'group'), pk=pk)
+    results = QuizResult.objects.filter(student=student).order_by('-submitted_at')
+    certificates = Certificate.objects.filter(
+        quiz_result__student=student
+    ).order_by('-generated_at')
+
+    if request.method == 'POST':
+        try:
+            user = student.user
+            username = request.POST.get('username', '').strip()
+            first_name = request.POST.get('first_name', '').strip()
+            last_name = request.POST.get('last_name', '').strip()
+            email = request.POST.get('email', '').strip()
+            group_id = request.POST.get('group')
+
+            if not username:
+                messages.error(request, 'Username kiritilishi shart!')
+                return redirect('student_detail', pk=pk)
+
+            if User.objects.filter(username=username).exclude(id=user.id).exists():
+                messages.error(request, f'"{username}" username allaqachon mavjud!')
+                return redirect('student_detail', pk=pk)
+
+            user.username = username
+            user.first_name = first_name
+            user.last_name = last_name
+            user.email = email
+            user.save()
+
+            if group_id:
+                student.group = Group.objects.get(id=group_id)
+            else:
+                student.group = None
+            student.save()
+
+            messages.success(request, f'{user.get_full_name()} tahrirlandi!')
+            return redirect('student_detail', pk=pk)
+        except Exception as e:
+            messages.error(request, f'Xatolik: {str(e)}')
+
+    cert_setting = CertificateSetting.objects.filter(is_active=True).first()
+    passing_threshold = cert_setting.threshold_percentage if cert_setting else 70
+    context = {
+        'student': student,
+        'results': results,
+        'certificates': certificates,
+        'groups': Group.objects.all(),
+        'passing_threshold': passing_threshold,
+    }
+    return render(request, 'groups/student_detail.html', context)
+
+
+@login_required
+@user_passes_test(is_admin_user)
 def student_delete(request, pk):
     student = get_object_or_404(Student, pk=pk)
     if request.method == 'POST':
@@ -374,6 +455,45 @@ def student_delete(request, pk):
         messages.success(request, f'{full_name} o\'chirildi!')
         return redirect('student_list')
     return render(request, 'groups/student_confirm_delete.html', {'student': student})
+
+
+@login_required
+@csrf_exempt
+def accept_rules_api(request):
+    if request.method != 'POST':
+        return JsonResponse({'success': False, 'error': 'Faqat POST'})
+    try:
+        student = request.user.student_profile
+        student.rules_accepted_at = timezone.now()
+        student.save()
+        return JsonResponse({'success': True, 'accepted_at': str(student.rules_accepted_at)})
+    except Student.DoesNotExist:
+        return JsonResponse({'success': False, 'error': 'Student profili topilmadi'})
+
+
+@login_required
+@csrf_exempt
+def change_group_api(request):
+    if request.method == 'POST':
+        try:
+            student = request.user.student_profile
+            data = json.loads(request.body)
+            group_id = data.get('group_id')
+            if group_id:
+                group = Group.objects.get(id=group_id)
+                student.group = group
+            else:
+                student.group = None
+            student.save()
+            return JsonResponse({'success': True, 'group_name': student.group.name if student.group else None})
+        except Student.DoesNotExist:
+            return JsonResponse({'success': False, 'error': 'Student profili topilmadi'})
+        except Group.DoesNotExist:
+            return JsonResponse({'success': False, 'error': 'Guruh topilmadi'})
+        except Exception as e:
+            return JsonResponse({'success': False, 'error': str(e)})
+    groups = Group.objects.all().values('id', 'name')
+    return JsonResponse({'success': True, 'groups': list(groups)})
 
 
 @login_required
@@ -403,6 +523,26 @@ def student_panel(request):
 
 @login_required
 @user_passes_test(is_admin_user)
+def student_archive(request, pk):
+    student = get_object_or_404(Student, pk=pk)
+    student.is_archived = True
+    student.save()
+    messages.success(request, f'{student.full_name} arxivga olindi!')
+    return redirect('student_list')
+
+
+@login_required
+@user_passes_test(is_admin_user)
+def student_restore(request, pk):
+    student = get_object_or_404(Student, pk=pk)
+    student.is_archived = False
+    student.save()
+    messages.success(request, f'{student.full_name} arxivdan chiqarildi!')
+    return redirect('student_list')
+
+
+@login_required
+@user_passes_test(is_admin_user)
 def student_bulk_delete(request):
     if request.method == 'POST':
         student_ids = request.POST.getlist('student_ids')
@@ -418,6 +558,23 @@ def student_bulk_delete(request):
             user.delete()
 
         messages.success(request, f"{student_count} ta foydalanuvchi muvaffaqiyatli o'chirildi!")
+    return redirect('student_list')
+
+
+@login_required
+@user_passes_test(is_admin_user)
+def student_bulk_archive(request):
+    if request.method == 'POST':
+        student_ids = request.POST.getlist('student_ids')
+        if not student_ids:
+            messages.warning(request, "Hech qanday foydalanuvchi tanlanmagan!")
+            return redirect('student_list')
+
+        students = Student.objects.filter(pk__in=student_ids)
+        student_count = students.count()
+        students.update(is_archived=True)
+
+        messages.success(request, f"{student_count} ta foydalanuvchi arxivga olindi!")
     return redirect('student_list')
 
 
@@ -931,6 +1088,8 @@ def quiz_submit(request):
     """Test javoblarini qabul qilish va baholash"""
     if request.method != 'POST':
         return JsonResponse({'success': False, 'message': 'Faqat POST so\'rov!'})
+    if not request.user.is_authenticated:
+        return JsonResponse({'success': False, 'message': 'Avtorizatsiya talab qilinadi'})
 
     try:
         # JSON ma'lumotlarni o'qish
@@ -960,8 +1119,10 @@ def quiz_submit(request):
         
         config, _ = GroupExamConfig.objects.get_or_create(group=group)
         
-        # Sessiyani olish
+        # Sessiyani olish (avval aktiv, topilmasa oxirgi sessiyani)
         quiz_session = QuizSession.objects.filter(group=group, is_active=True).first()
+        if not quiz_session:
+            quiz_session = QuizSession.objects.filter(group=group).order_by('-started_at').first()
         if not quiz_session:
             quiz_session = QuizSession.objects.create(
                 group=group, 
@@ -975,35 +1136,33 @@ def quiz_submit(request):
             student=student, 
             exam_session=quiz_session,
             is_completed=True
-        ).exists()
-        
-        if existing_completed:
-            # Agar student allaqachon topshirgan bo'lsa, qayta topshirishga ruxat bermaymiz
-            return JsonResponse({
-                'success': False, 
-                'message': 'Siz allaqachon testni topshirgansiz! Qayta topshirish mumkin emas.',
-                'already_submitted': True
-            })
-        
-        # Attemptni olish yoki yaratish
-        attempt = UserExamAttempt.objects.filter(
-            student=student, 
-            exam_session=quiz_session,
-            is_completed=False
         ).first()
         
-        if not attempt:
-            attempt = UserExamAttempt.objects.create(
-                student=student,
-                exam_session=quiz_session,
-                selected_questions=[q.id for q in all_questions],
-                user_answers=answers,
-                attempt_number=1,
-                is_completed=False
-            )
+        if existing_completed:
+            # Stop_exam_api tomonidan tugallangan bo'lsa, natijani yangilash
+            existing_completed.user_answers = answers
+            existing_completed.save()
+            attempt = existing_completed
         else:
-            attempt.user_answers = answers
-            attempt.save()
+            # Attemptni olish yoki yaratish
+            attempt = UserExamAttempt.objects.filter(
+                student=student, 
+                exam_session=quiz_session,
+                is_completed=False
+            ).first()
+            
+            if not attempt:
+                attempt = UserExamAttempt.objects.create(
+                    student=student,
+                    exam_session=quiz_session,
+                    selected_questions=[q.id for q in all_questions],
+                    user_answers=answers,
+                    attempt_number=1,
+                    is_completed=False
+                )
+            else:
+                attempt.user_answers = answers
+                attempt.save()
         
         # BALLARNI HISOBLASH
         total_score = 0
@@ -1335,18 +1494,22 @@ def save_answer_api(request):
         data = json.loads(request.body)
         student = Student.objects.get(user=request.user)
         group_id = data.get('group_id')
-        question_id = data.get('question_id')
-        answer = data.get('answer', '')
 
         quiz_session = QuizSession.objects.filter(group_id=group_id, is_active=True).first()
         if not quiz_session:
-            return JsonResponse({'success': False, 'message': 'Sessiya topilmadi'})
+            # Inactive sessiyada ham saqlashga ruxsat (pauza/stop dan keyin)
+            quiz_session = QuizSession.objects.filter(group_id=group_id).order_by('-started_at').first()
+            if not quiz_session:
+                return JsonResponse({'success': False, 'message': 'Sessiya topilmadi'})
 
         attempt = UserExamAttempt.objects.filter(
             student=student, exam_session=quiz_session, is_completed=False
         ).first()
 
         if not attempt:
+            # Agar sessiya aktiv bo'lmasa, yangi attempt yaratmaymiz
+            if not quiz_session.is_active:
+                return JsonResponse({'success': False, 'message': 'Sessiya tugagan'})
             group = Group.objects.get(id=group_id)
             attempt = UserExamAttempt.objects.create(
                 student=student,
@@ -1359,7 +1522,17 @@ def save_answer_api(request):
         if not attempt.user_answers:
             attempt.user_answers = {}
 
-        attempt.user_answers[f'q_{question_id}'] = answer
+        # Bulk save (barcha javoblarni bir vaqtda)
+        if 'answers' in data:
+            for key, value in data['answers'].items():
+                if key and value:
+                    attempt.user_answers[key] = value
+        # Single save (bitta savol javobi)
+        elif data.get('question_id'):
+            question_id = data.get('question_id')
+            answer = data.get('answer', '')
+            attempt.user_answers[f'q_{question_id}'] = answer
+
         attempt.save()
 
         return JsonResponse({'success': True})
@@ -1773,79 +1946,6 @@ def _calculate_score_for_attempt(attempt, group):
 
 
 
-@login_required
-@csrf_exempt
-@require_http_methods(["POST"])
-def quiz_check_status(request):
-    """Test holatini tekshirish - qolgan vaqtni to'g'ri hisoblash"""
-    try:
-        data = json.loads(request.body)
-        group_id = data.get('group_id')
-        if not group_id:
-            return JsonResponse({'success': False, 'error': 'group_id kerak'})
-
-        group = Group.objects.get(id=group_id)
-        config, _ = GroupExamConfig.objects.get_or_create(group=group)
-        
-        # Database dan holatni olish
-        try:
-            exam_control = ExamControl.objects.get(group_id=group_id)
-            is_active = exam_control.is_active
-            is_paused = exam_control.is_paused
-            elapsed_time = exam_control.elapsed_time
-            started_at = exam_control.started_at
-        except ExamControl.DoesNotExist:
-            is_active = False
-            is_paused = False
-            elapsed_time = 0
-            started_at = None
-        
-        remaining_time = None
-        total_time = config.time_limit * 60 if config.time_limit > 0 else 0
-        
-        if is_active and started_at and total_time > 0:
-            # Aktiv test - o'tgan vaqtni hisoblash
-            now = timezone.now()
-            elapsed = (now - started_at).total_seconds()
-            remaining_time = max(0, int(total_time - elapsed))
-            
-            # Vaqt tugaganligini tekshirish
-            if remaining_time <= 0:
-                is_active = False
-                exam_control.is_active = False
-                exam_control.save()
-                cache.delete(f'exam_active_{group_id}')
-                
-        elif is_paused and total_time > 0:
-            # Pauza holati - elapsed_time dan foydalanish
-            remaining_time = max(0, total_time - elapsed_time)
-            
-        elif total_time > 0:
-            # Hech qanday holat yo'q
-            remaining_time = total_time
-        
-        # Cache ni yangilash
-        cache.set(f'exam_active_{group_id}', is_active, timeout=3600)
-        if is_paused:
-            cache.set(f'exam_paused_{group_id}', True, timeout=3600)
-        else:
-            cache.delete(f'exam_paused_{group_id}')
-        
-        return JsonResponse({
-            'success': True,
-            'is_active': is_active,
-            'is_paused': is_paused,
-            'remaining_time': remaining_time,
-            'elapsed_time': elapsed_time
-        })
-
-    except Exception as e:
-        return JsonResponse({'success': False, 'error': str(e), 'is_active': False, 'is_paused': False}, status=500)
-
-
-
-
-
 
 
 
@@ -1877,11 +1977,11 @@ def stop_exam_api(request):
         # BARCHA STUDENTLARNI OLISH
         all_students = Student.objects.filter(group=group)
         
-        # Joriy sessiyani olish
+        # Joriy sessiyani olish (avval aktiv, topilmasa oxirgi sessiyani)
         quiz_session = QuizSession.objects.filter(group=group, is_active=True).first()
-        
         if not quiz_session:
-            # Sessiya bo'lmasa, yangi yaratish (javoblar saqlanishi uchun)
+            quiz_session = QuizSession.objects.filter(group=group).order_by('-started_at').first()
+        if not quiz_session:
             quiz_session = QuizSession.objects.create(
                 group=group, 
                 is_active=False, 
@@ -2980,7 +3080,7 @@ def student_attempts_api(request, student_id):
 from django.shortcuts import render
 
 def offline_view(request):
-    return render(request, 'offline.html')
+    return render(request, 'groups/offline.html')
 
 
 
@@ -3567,73 +3667,6 @@ def pause_exam_api(request):
 
 
 @login_required
-@user_passes_test(is_admin_user)
-@csrf_exempt
-@require_http_methods(["POST"])
-def resume_exam_api(request):
-    """Pauzadagi testni qayta boshlash"""
-    try:
-        data = json.loads(request.body)
-        group_id = data.get('group_id')
-        if not group_id:
-            return JsonResponse({'success': False, 'message': 'group_id kerak'})
-
-        group = Group.objects.get(id=group_id)
-        config, _ = GroupExamConfig.objects.get_or_create(group=group)
-        now = timezone.now()
-        
-        exam_control, _ = ExamControl.objects.get_or_create(group=group)
-        
-        # Agar test pauzada bo'lmasa
-        if not exam_control.is_paused:
-            return JsonResponse({'success': False, 'message': 'Test pauzada emas!'})
-        
-        total_time = config.time_limit * 60
-        elapsed_time = exam_control.elapsed_time
-        
-        # Yangi start vaqtini hisoblash
-        new_started_at = now - timezone.timedelta(seconds=elapsed_time)
-        
-        exam_control.is_active = True
-        exam_control.is_paused = False
-        exam_control.started_at = new_started_at
-        exam_control.paused_at = None
-        exam_control.save()
-        
-        # Cache ni yangilash
-        cache.set(f'exam_active_{group_id}', True, timeout=86400)
-        cache.delete(f'exam_paused_{group_id}')
-        cache.set(f'exam_start_time_{group_id}', new_started_at.isoformat(), timeout=86400)
-        
-        # Tugash vaqtini hisoblash
-        if config.time_limit > 0:
-            end_time = new_started_at + timezone.timedelta(seconds=total_time)
-            cache.set(f'exam_end_time_{group_id}', end_time.isoformat(), timeout=86400)
-        
-        # QuizSession ni qayta aktivlashtirish
-        quiz_session = QuizSession.objects.filter(group=group).order_by('-started_at').first()
-        if quiz_session:
-            quiz_session.is_active = True
-            quiz_session.save()
-        else:
-            quiz_session = QuizSession.objects.create(
-                group=group, is_active=True, started_at=now, created_by=request.user
-            )
-        
-        return JsonResponse({
-            'success': True,
-            'message': 'Test qayta boshlandi!',
-            'is_active': True,
-            'is_paused': False,
-            'elapsed_time': elapsed_time,
-            'should_reload': True
-        })
-        
-    except Exception as e:
-        return JsonResponse({'success': False, 'message': str(e)})
-
-
-@login_required
 @csrf_exempt
 @require_http_methods(["POST"])
 def quiz_check_status(request):
@@ -3690,6 +3723,20 @@ def quiz_check_status(request):
         elif total_time > 0:
             remaining_time = total_time
         
+        # VAQT TUGASA - testni avtomatik to'xtatish
+        if remaining_time is not None and remaining_time <= 0 and is_active and not is_paused:
+            try:
+                exam_control = ExamControl.objects.get(group_id=group_id)
+                exam_control.is_active = False
+                exam_control.is_paused = False
+                exam_control.save()
+                cache.set(f'exam_active_{group_id}', False, 300)
+                cache.set(f'exam_paused_{group_id}', False, 300)
+                is_active = False
+                is_paused = False
+            except ExamControl.DoesNotExist:
+                pass
+
         return JsonResponse({
             'success': True,
             'is_active': is_active,
@@ -3710,71 +3757,6 @@ def quiz_check_status(request):
 
 
 
-
-
-@login_required
-@user_passes_test(is_admin_user)
-@csrf_exempt
-@require_http_methods(["POST"])
-def resume_exam_api(request):
-    """Pauzadagi testni qayta boshlash - studentlar uchun avtomatik reload"""
-    try:
-        data = json.loads(request.body)
-        group_id = data.get('group_id')
-        if not group_id:
-            return JsonResponse({'success': False, 'message': 'group_id kerak'})
-
-        group = Group.objects.get(id=group_id)
-        config, _ = GroupExamConfig.objects.get_or_create(group=group)
-        now = timezone.now()
-        
-        exam_control, _ = ExamControl.objects.get_or_create(group=group)
-        
-        if not exam_control.is_paused:
-            return JsonResponse({'success': False, 'message': 'Test pauzada emas!'})
-        
-        total_time = config.time_limit * 60
-        elapsed_time = exam_control.elapsed_time
-        remaining_time = max(0, total_time - elapsed_time)
-        
-        new_started_at = now - timezone.timedelta(seconds=elapsed_time)
-        
-        exam_control.is_active = True
-        exam_control.is_paused = False
-        exam_control.started_at = new_started_at
-        exam_control.paused_at = None
-        exam_control.save()
-        
-        # Cache ni yangilash
-        cache.set(f'exam_active_{group_id}', True, timeout=86400)
-        cache.delete(f'exam_paused_{group_id}')
-        cache.set(f'exam_start_time_{group_id}', new_started_at.isoformat(), timeout=86400)
-        
-        # QuizSession ni qayta aktivlashtirish
-        quiz_session = QuizSession.objects.filter(group=group).order_by('-started_at').first()
-        if quiz_session:
-            quiz_session.is_active = True
-            quiz_session.save()
-        else:
-            quiz_session = QuizSession.objects.create(
-                group=group, is_active=True, started_at=now, created_by=request.user
-            )
-        
-        remaining_min = remaining_time // 60
-        remaining_sec = remaining_time % 60
-        
-        return JsonResponse({
-            'success': True,
-            'message': f'Test qayta boshlandi! Qolgan vaqt: {remaining_min}:{remaining_sec:02d}',
-            'is_active': True,
-            'is_paused': False,
-            'remaining_time': remaining_time,
-            'elapsed_time': elapsed_time,
-            'should_reload': True  # MUHIM: Student sahifasini reload qilish kerak
-        })
-        
-    except Exception as e:
-        return JsonResponse({'success': False, 'message': str(e)})
 
 
 
@@ -3905,6 +3887,17 @@ def get_remaining_time_api(request):
         except ExamControl.DoesNotExist:
             remaining_time = config.time_limit * 60
         
+        # VAQT TUGASA - testni avtomatik to'xtatish
+        if remaining_time is not None and remaining_time <= 0 and 'exam_control' in locals() and exam_control.is_active and not exam_control.is_paused:
+            try:
+                exam_control.is_active = False
+                exam_control.is_paused = False
+                exam_control.save()
+                cache.set(f'exam_active_{group_id}', False, 300)
+                cache.set(f'exam_paused_{group_id}', False, 300)
+            except Exception:
+                pass
+
         return JsonResponse({
             'success': True,
             'remaining_time': remaining_time,
@@ -4431,8 +4424,11 @@ def view_certificate(request, cert_id):
                 messages.error(request, "Bu sertifikatni ko'rish huquqi yo'q!")
                 return redirect('home')
 
+    cert_setting = CertificateSetting.objects.filter(is_active=True).first()
+    threshold = cert_setting.threshold_percentage if cert_setting else 50
     context = {
         'cert': cert,
+        'threshold': threshold,
     }
     return render(request, 'groups/view_certificate.html', context)
 
@@ -4479,6 +4475,11 @@ def my_certificates(request):
     certificates = Certificate.objects.filter(
         quiz_result__student=student
     ).order_by('-generated_at')
+
+    if not certificates:
+        certificates = Certificate.objects.filter(
+            student_name__icontains=student.full_name
+        ).order_by('-generated_at')
 
     context = {
         'certificates': certificates,

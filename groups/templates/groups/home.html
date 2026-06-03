@@ -22,15 +22,20 @@
         </p>
         
         <!-- Buttons -->
-        <div class="flex flex-col sm:flex-row gap-4 justify-center">
-            <a href="{% url 'login' %}" class="inline-flex items-center justify-center px-6 py-3 border border-transparent text-base font-medium rounded-lg text-white bg-gray-900 hover:bg-gray-800 transition duration-200">
+        <div class="flex justify-center items-center gap-3">
+            <a href="{% url 'login' %}" class="inline-flex items-center justify-center px-8 py-3.5 border border-transparent text-base font-semibold rounded-lg text-white bg-gray-900 hover:bg-gray-800 shadow-sm transition duration-200">
                 <i class="fas fa-sign-in-alt mr-2"></i>
                 Kirish
             </a>
-            <a href="{% url 'register' %}" class="inline-flex items-center justify-center px-6 py-3 border border-gray-300 text-base font-medium rounded-lg text-gray-700 bg-white hover:bg-gray-50 transition duration-200">
+              <a href="{% url 'register' %}" class="inline-flex items-center justify-center px-8 py-3.5 border border-transparent text-base font-semibold rounded-lg text-white bg-gray-900 hover:bg-gray-800 shadow-sm transition duration-200">
                 <i class="fas fa-user-plus mr-2"></i>
                 Ro'yxatdan o'tish
             </a>
+              <a href="{% url 'sayt_haqida' %}" class="inline-flex items-center justify-center px-8 py-3.5 border border-transparent text-base font-semibold rounded-lg text-white bg-gray-900 hover:bg-gray-800 shadow-sm transition duration-200">
+                <i class="fas fa-info-circle mr-2"></i>
+                Sayt haqida
+            </a>
+           
         </div>
         
         <!-- Footer -->

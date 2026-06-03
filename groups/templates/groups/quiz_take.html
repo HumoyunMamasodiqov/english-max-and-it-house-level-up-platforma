@@ -433,6 +433,28 @@
     </div>
 </div>
 
+<!-- QOIDALAR OVERLAY -->
+{% if is_exam_active and not has_completed and not already_submitted and not student.rules_accepted_at %}
+<div id="rulesOverlay" class="fixed inset-0 bg-black/80 flex items-center justify-center z-[110]">
+    <div class="bg-white rounded-2xl p-8 shadow-2xl max-w-lg mx-4">
+        <div class="text-center mb-6">
+            <div class="text-5xl mb-3">📋</div>
+            <h2 class="text-2xl font-bold text-gray-800">Test qoidalari</h2>
+        </div>
+        <div class="text-sm text-gray-600 space-y-2 mb-6 max-h-60 overflow-y-auto border rounded-lg p-4 bg-gray-50">
+            <p>1. Test davomida oynani yangilash yoki orqaga qaytish taqiqlanadi.</p>
+            <p>2. Har bir savolga bir marta javob berish mumkin.</p>
+            <p>3. Ajratilgan vaqt tugagandan so'ng test avtomatik yakunlanadi.</p>
+            <p>4. Testni o'qituvchi ruxsatisiz tark etish mumkin emas.</p>
+            <p>5. Agar tizimda g'ayrioddiy harakat aniqlansa, test bekor qilinishi mumkin.</p>
+        </div>
+        <button onclick="acceptRules()" class="w-full bg-black text-white py-3 rounded-lg text-sm font-medium hover:bg-gray-800 transition">
+            Qoidalarni qabul qilaman
+        </button>
+    </div>
+</div>
+{% endif %}
+
 <style>
     .category-page {
         animation: fadeSlide 0.3s ease-out;
@@ -609,6 +631,14 @@ function saveAnswersToLocalStorage() {
             allAnswers[s.name] = s.value;
         } else if (s.name) {
             delete allAnswers[s.name];
+        }
+    });
+    
+    document.querySelectorAll('.cloze-input').forEach(input => {
+        if (input.name && input.value && input.value.trim()) {
+            allAnswers[input.name] = input.value.trim();
+        } else if (input.name) {
+            delete allAnswers[input.name];
         }
     });
     
@@ -1016,6 +1046,26 @@ function getCSRFToken() {
 }
 
 // ============================================================
+// QOIDALARNI QABUL QILISH
+// ============================================================
+async function acceptRules() {
+    try {
+        const response = await fetch('/api/accept-rules/', {
+            method: 'POST',
+            headers: { 'X-CSRFToken': getCSRFToken() }
+        });
+        const data = await response.json();
+        if (data.success) {
+            document.getElementById('rulesOverlay')?.remove();
+        } else {
+            alert('Xatolik: ' + (data.error || 'Noma\'lum xato'));
+        }
+    } catch(err) {
+        alert('Server xatosi! Qaytadan urinib ko\'ring');
+    }
+}
+
+// ============================================================
 // PAUZA VA RESUME - STATUS CHECK
 // ============================================================
 let examCheckInterval = null;
@@ -1025,6 +1075,50 @@ let isSubmitting = false;
 let isBlocked = false;
 let remainingSeconds = {{ config.time_limit|default:0 }} * 60;
 let timerInt = null;
+
+// Pauza vaqtida DOM dagi barcha javoblarni snapshot qilib olish
+let answersSnapshot = {};
+
+function captureAnswersSnapshot() {
+    answersSnapshot = {};
+    document.querySelectorAll('.question-card').forEach(card => {
+        const qid = card.dataset.qid;
+        card.querySelectorAll('input[type="radio"]').forEach(r => {
+            if (r.checked) answersSnapshot[r.name] = r.value;
+        });
+        card.querySelectorAll('select').forEach(s => {
+            if (s.name && s.value) answersSnapshot[s.name] = s.value;
+        });
+        card.querySelectorAll('input:not([type="radio"]):not([type="hidden"]), textarea').forEach(el => {
+            if (el.name && el.value && el.value.trim()) answersSnapshot[el.name] = el.value.trim();
+        });
+        card.querySelectorAll('.sentence-input').forEach(el => {
+            if (el.name && el.value && el.value.trim()) answersSnapshot[el.name] = el.value.trim();
+        });
+    });
+    document.querySelectorAll('.cloze-input').forEach(el => {
+        if (el.name && el.value && el.value.trim()) answersSnapshot[el.name] = el.value.trim();
+    });
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(answersSnapshot));
+}
+
+function restoreAnswersFromSnapshot() {
+    for (const [name, value] of Object.entries(answersSnapshot)) {
+        const el = document.querySelector(`[name="${name}"]`);
+        if (!el) continue;
+        if (el.type === 'radio') {
+            const radio = document.querySelector(`[name="${name}"][value="${CSS.escape(value)}"]`);
+            if (radio) radio.checked = true;
+        } else if (el.tagName === 'SELECT') {
+            el.value = value;
+        } else {
+            el.value = value;
+        }
+    }
+    updateProgress();
+    restoreSentenceBuilders();
+    restoreCompleteTheWords();
+}
 
 async function checkExamStatus() {
     if (isBlocked || isSubmitting) return;
@@ -1045,34 +1139,47 @@ async function checkExamStatus() {
             // PAUZA HOLATI
             if (data.is_paused && !isPaused && data.is_active === false) {
                 console.log("Test pauzaga qo'yildi!");
+                captureAnswersSnapshot();
+                await saveAnswersToServer();
+                isExamActive = false;
                 isPaused = true;
                 showPauseOverlay();
                 return;
             }
             
-            // RESUME - QAYTA BOSHLANDI
+            // RESUME - QAYTA BOSHLANDI (sahifa yangilanmasdan)
             if (!data.is_paused && isPaused && data.is_active === true) {
                 console.log("Test qayta boshlandi!");
+                isExamActive = true;
                 isPaused = false;
                 hidePauseOverlay();
-                window.location.reload();
+                restoreAnswersFromSnapshot();
+                await saveAnswersToServer();
+                saveAnswersToLocalStorage();
                 return;
             }
             
-            // TEST STOP BO'LGAN
-            if (!data.is_active && !data.is_paused && isExamActive && !isPaused) {
+            // TEST STOP BO'LGAN (pauza holatidan keyin ham ishlashi uchun)
+            if (!data.is_active && !data.is_paused && isExamActive) {
                 console.log("Test stopped by admin - auto submitting...");
                 await autoSubmitOnStop();
                 return;
             }
             
             // QOLGAN VAQTNI YANGILASH
-            if (data.is_active && data.remaining_time !== null && data.remaining_time > 0) {
+            if (data.remaining_time !== null) {
                 remainingSeconds = data.remaining_time;
                 const mins = Math.floor(remainingSeconds / 60);
                 const secs = remainingSeconds % 60;
                 const timerEl = document.getElementById('timer');
                 if (timerEl) timerEl.innerText = `${mins}:${secs.toString().padStart(2, '0')}`;
+            }
+            
+            // VAQT TUGASA - avtomatik yakunlash
+            if (data.remaining_time !== null && data.remaining_time <= 0 && !data.is_paused && !isPaused) {
+                console.log("Vaqt tugadi - test yakunlanmoqda...");
+                await autoSubmitOnStop();
+                return;
             }
             
             isExamActive = data.is_active;
@@ -1086,6 +1193,11 @@ function showPauseOverlay() {
     if (timerInt) {
         clearInterval(timerInt);
         timerInt = null;
+    }
+    
+    if (handleBeforeUnload) {
+        window.removeEventListener('beforeunload', handleBeforeUnload);
+        handleBeforeUnload = null;
     }
     
     document.querySelectorAll('input, select, button').forEach(el => {
@@ -1109,6 +1221,15 @@ function hidePauseOverlay() {
             el.disabled = false;
         });
     }
+    
+    if (!handleBeforeUnload) {
+        handleBeforeUnload = function(e) {
+            if (isSubmitting) return;
+            e.preventDefault();
+            e.returnValue = 'Testdan chiqishni xohlaysizmi? Barcha javoblar yo\'qoladi!';
+        };
+        window.addEventListener('beforeunload', handleBeforeUnload);
+    }
 }
 
 async function autoSubmitOnStop() {
@@ -1116,9 +1237,22 @@ async function autoSubmitOnStop() {
     
     if (timerInt) clearInterval(timerInt);
     if (examCheckInterval) clearInterval(examCheckInterval);
+    if (handleBeforeUnload) {
+        window.removeEventListener('beforeunload', handleBeforeUnload);
+        handleBeforeUnload = null;
+    }
+    
+    saveAnswersToLocalStorage();
+    
+    // Pauza overlayini yopish (agar pauza holatida bo'lsa)
+    const pauseOverlay = document.getElementById('pauseOverlay');
+    if (pauseOverlay) pauseOverlay.classList.add('hidden');
     
     const stopOverlay = document.getElementById('stopOverlay');
     if (stopOverlay) stopOverlay.classList.remove('hidden');
+    
+    // Avval serverga saqlash (isBlocked dan oldin)
+    await saveAnswersToServer();
     
     document.querySelectorAll('input, select, button').forEach(el => { el.disabled = true; });
     isBlocked = true;
@@ -1179,6 +1313,12 @@ function collectAllAnswers() {
     document.querySelectorAll('select').forEach(s => {
         if (s.name && s.value) {
             answers[s.name] = s.value;
+        }
+    });
+    
+    document.querySelectorAll('.cloze-input').forEach(input => {
+        if (input.name && input.value && input.value.trim()) {
+            answers[input.name] = input.value.trim();
         }
     });
     
@@ -1327,6 +1467,10 @@ function startTimer() {
 
 async function autoSubmitTest() {
     if (isSubmitting || isBlocked) return;
+    if (handleBeforeUnload) {
+        window.removeEventListener('beforeunload', handleBeforeUnload);
+        handleBeforeUnload = null;
+    }
     const form = document.getElementById('quizForm');
     if (form) {
         const event = new Event('submit', { bubbles: true, cancelable: true });
@@ -1342,7 +1486,7 @@ async function getRemainingTime() {
             body: JSON.stringify({ group_id: {{ group.id }} })
         });
         const data = await response.json();
-        if (data.success && data.remaining_time) {
+        if (data.success && data.remaining_time !== null && data.remaining_time !== undefined) {
             remainingSeconds = data.remaining_time;
             const mins = Math.floor(remainingSeconds / 60);
             const secs = remainingSeconds % 60;
@@ -1420,16 +1564,77 @@ if ({{ is_exam_active|yesno:"true,false" }} && !{{ has_completed|yesno:"true,fal
 // INIT - TIMER: serverdan qolgan vaqtni olib keyin ishga tush
 // ============================================================
 if ({{ config.time_limit|default:0 }} > 0 && {{ is_exam_active|yesno:"true,false" }} && !{{ has_completed|yesno:"true,false" }}) {
-    getRemainingTime().then(() => {
-        startTimer();
+    getRemainingTime().then((data) => {
+        if (data && data.success && data.remaining_time !== null && data.remaining_time <= 0) {
+            autoSubmitOnStop();
+        } else {
+            startTimer();
+        }
     });
+}
+
+// ============================================================
+// SERVERGA JAVOBLARNI SAQLASH (periodic va har o'zgarishda)
+// ============================================================
+let serverSaveTimeout = null;
+
+async function saveAnswersToServer() {
+    if (isBlocked || isSubmitting) return;
+    const answers = collectAllAnswers();
+    if (Object.keys(answers).length === 0) return;
+    try {
+        await fetch('/save-answer-api/', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', 'X-CSRFToken': getCSRFToken() },
+            body: JSON.stringify({ group_id: {{ group.id }}, answers: answers })
+        });
+    } catch (e) { /* silent */ }
+}
+
+function debouncedSaveToServer() {
+    if (serverSaveTimeout) clearTimeout(serverSaveTimeout);
+    serverSaveTimeout = setTimeout(() => {
+        saveAnswersToServer();
+    }, 2000);
 }
 
 if (!{{ has_completed|yesno:"true,false" }} && {{ is_exam_active|yesno:"true,false" }}) {
     examCheckInterval = setInterval(async () => { await checkExamStatus(); }, 2000);
+    setInterval(() => { saveAnswersToLocalStorage(); }, 3000);
+    setInterval(async () => { await saveAnswersToServer(); }, 10000);
+    
+    // Har qanday o'zgarishda serverga saqlash
+    document.addEventListener('change', function(e) {
+        const tag = e.target.tagName;
+        const type = e.target.type;
+        if (tag === 'SELECT' || tag === 'INPUT' || tag === 'TEXTAREA') {
+            if (e.target.closest('.question-card')) {
+                debouncedSaveToServer();
+            }
+        }
+    });
+    
+    document.addEventListener('input', function(e) {
+        if (e.target.closest('.question-card') && 
+            (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA')) {
+            debouncedSaveToServer();
+        }
+    });
 }
 
 window.addEventListener('beforeunload', () => {
+    saveAnswersToLocalStorage();
+    try {
+        const answers = collectAllAnswers();
+        if (Object.keys(answers).length > 0) {
+            fetch('/save-answer-api/', {
+                method: 'POST',
+                keepalive: true,
+                headers: { 'Content-Type': 'application/json', 'X-CSRFToken': getCSRFToken() },
+                body: JSON.stringify({ group_id: {{ group.id }}, answers: answers })
+            });
+        }
+    } catch(e) {}
     if (examCheckInterval) clearInterval(examCheckInterval);
     if (timerInt) clearInterval(timerInt);
 });

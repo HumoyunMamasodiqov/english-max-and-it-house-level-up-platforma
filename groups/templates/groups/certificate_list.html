@@ -5,7 +5,12 @@
     <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
         <div class="flex items-center justify-between mb-8">
             <div>
-                <h1 class="text-2xl font-bold text-gray-900">Sertifikatlar</h1>
+                <div class="flex items-center gap-3 mb-1">
+                    <a href="{% url 'admin_panel' %}" class="text-gray-400 hover:text-gray-600 transition">
+                        <i class="fas fa-arrow-left"></i>
+                    </a>
+                    <h1 class="text-2xl font-bold text-gray-900">Sertifikatlar</h1>
+                </div>
                 <p class="text-gray-500 text-sm mt-1">Barcha yaratilgan sertifikatlar</p>
             </div>
             <div class="flex items-center gap-3">
