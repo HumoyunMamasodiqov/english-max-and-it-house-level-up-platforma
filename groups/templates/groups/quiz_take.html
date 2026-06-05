@@ -1,4 +1,5 @@
 {% extends 'groups/base.html' %}
+{% load static %}
 
 {% block title %}Test topshirish - {{ group.name }}{% endblock %}
 
@@ -430,6 +431,19 @@
         <a href="{% url 'student_panel' %}" class="inline-block bg-black text-white px-6 py-2 rounded-lg text-sm hover:bg-gray-800 transition">
             Panelga qaytish
         </a>
+    </div>
+</div>
+
+<!-- SIGNALIZATSIYA OVERLAY -->
+<div id="securityAlarmOverlay" class="fixed inset-0 bg-black/90 flex items-center justify-center z-[150] hidden">
+    <div class="bg-white rounded-2xl p-8 text-center shadow-2xl max-w-md mx-4 border-4 border-red-600 animate-pulse">
+        <div class="text-7xl mb-4"><i  class="fas fa-exclamation-triangle text-red-600"></i></div>
+        <h2 class="text-3xl font-bold text-red-600 mb-3">DIQQAT! SIGNALIZATSIYA!</h2>
+        <p class="text-gray-500 mb-2">Test vaqtida boshqa oynaga o'tish taqiqlanadi!</p>
+        <p class="text-sm text-gray-400 mb-6">Signal to'xtashi uchun OK tugmasini bosing.</p>
+        <button onclick="stopAlarm()" class="bg-red-600 text-white px-10 py-3 rounded-lg text-lg font-bold hover:bg-red-700 transition shadow-lg">
+            OK
+        </button>
     </div>
 </div>
 
@@ -1190,6 +1204,8 @@ async function checkExamStatus() {
 }
 
 function showPauseOverlay() {
+    stopAlarm();
+    
     if (timerInt) {
         clearInterval(timerInt);
         timerInt = null;
@@ -1234,6 +1250,7 @@ function hidePauseOverlay() {
 
 async function autoSubmitOnStop() {
     if (isSubmitting || isBlocked) return;
+    stopAlarm();
     
     if (timerInt) clearInterval(timerInt);
     if (examCheckInterval) clearInterval(examCheckInterval);
@@ -1501,6 +1518,39 @@ async function getRemainingTime() {
 // EXAM SECURITY - HIMOYA (SCREENSHOT, PRINT, TAB SWITCH)
 // ============================================================
 let handleBeforeUnload = null;
+let alarmAudio = null;
+let isAlarmPlaying = false;
+
+function initAlarm() {
+    alarmAudio = new Audio("{% static 'SIGNALIZATSIYA.mp3' %}");
+    alarmAudio.loop = true;
+    alarmAudio.volume = 1.0;
+}
+
+function playAlarm() {
+    if (isAlarmPlaying || isSubmitting || isBlocked || isPaused) return;
+    isAlarmPlaying = true;
+    if (!alarmAudio) initAlarm();
+    alarmAudio.currentTime = 0;
+    alarmAudio.play().catch(function() {});
+}
+
+function stopAlarm() {
+    if (alarmAudio) {
+        alarmAudio.pause();
+        alarmAudio.currentTime = 0;
+    }
+    isAlarmPlaying = false;
+    const overlay = document.getElementById('securityAlarmOverlay');
+    if (overlay) overlay.classList.add('hidden');
+}
+
+function showAlarmOverlay() {
+    if (isSubmitting || isBlocked) return;
+    const overlay = document.getElementById('securityAlarmOverlay');
+    if (overlay) overlay.classList.remove('hidden');
+}
+
 if ({{ is_exam_active|yesno:"true,false" }} && !{{ has_completed|yesno:"true,false" }}) {
     // Disable right-click
     document.addEventListener('contextmenu', (e) => { e.preventDefault(); });
@@ -1529,17 +1579,30 @@ if ({{ is_exam_active|yesno:"true,false" }} && !{{ has_completed|yesno:"true,fal
         }
     });
 
-    // Blur detection - window focus yo'qotganda
+    // Blur - oyna fokusni yo'qotganda SIGNALIZATSIYA
     window.addEventListener('blur', () => {
-        if (!isSubmitting && !isBlocked) {
-            console.warn('Test oynasi fokusni yo\'qotdi!');
+        if (!isSubmitting && !isBlocked && !isPaused) {
+            playAlarm();
         }
     });
 
-    // visibility change - tab almashganda
+    // Focus - qaytib kelganda overlay chiqarish
+    window.addEventListener('focus', () => {
+        if (isAlarmPlaying && !isSubmitting && !isBlocked) {
+            showAlarmOverlay();
+        }
+    });
+
+    // visibility change - tab almashganda SIGNALIZATSIYA
     document.addEventListener('visibilitychange', () => {
         if (document.hidden) {
-            alert('⚠ Diqqat! Test varaqasidan chiqish mumkin emas. Iltimos, testga qayting.');
+            if (!isSubmitting && !isBlocked && !isPaused) {
+                playAlarm();
+            }
+        } else {
+            if (isAlarmPlaying && !isSubmitting && !isBlocked) {
+                showAlarmOverlay();
+            }
         }
     });
 
@@ -1554,6 +1617,7 @@ if ({{ is_exam_active|yesno:"true,false" }} && !{{ has_completed|yesno:"true,fal
     // Warn on page leave / refresh
     handleBeforeUnload = function(e) {
         if (isSubmitting) return;
+        playAlarm();
         e.preventDefault();
         e.returnValue = 'Testdan chiqishni xohlaysizmi? Barcha javoblar yo\'qoladi!';
     };
