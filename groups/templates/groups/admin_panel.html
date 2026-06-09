@@ -59,6 +59,10 @@
                                     <i class="fas fa-tags text-gray-400 w-4 text-center"></i>
                                     <span>Kategoriyalar</span>
                                 </a>
+                                <a href="{% url 'folder_list' %}" class="flex items-center gap-2 px-2 py-2 text-xs text-gray-700 hover:bg-gray-50 rounded-lg transition">
+                                    <i class="fas fa-folder text-gray-400 w-4 text-center"></i>
+                                    <span>Papkalar</span>
+                                </a>
                                 <a href="{% url 'rules_edit' %}" class="flex items-center gap-2 px-2 py-2 text-xs text-gray-700 hover:bg-gray-50 rounded-lg transition">
                                     <i class="fas fa-gavel text-gray-400 w-4 text-center"></i>
                                     <span>Qoidalar</span>
@@ -297,30 +301,37 @@
                                 {% endwith %}
                             </td>
                             <td class="px-6 py-4 text-sm text-gray-500">{{ group.created_at|date:"d.m.Y" }}</td>
-                            <td class="px-6 py-4 text-right">
-                                <div class="flex items-center justify-end space-x-3">
-                                 
-                                    <!-- Imtihon sozlamalari -->
-                                    <a href="{% url 'group_exam_config' group.id %}" class="text-purple-400 hover:text-purple-600 transition" title="Imtihon sozlamalari">
-                                        <i class="fas fa-sliders-h"></i>
-                                    </a>
-                                    <a href="{% url 'group_detail' group.id %}" class="text-gray-400 hover:text-gray-600 transition" title="Ko'rish">
-                                        <i class="fas fa-eye"></i>
-                                    </a>
-                                    <a href="{% url 'group_categories_manage' group.id %}" class="text-indigo-400 hover:text-indigo-600 transition" title="Kategoriyalar">
-                                        <i class="fas fa-tags"></i>
-                                    </a>
-                                    <a href="{% url 'exam_control' group.id %}" class="text-green-400 hover:text-green-600 transition" title="Imtihon">
-                                        <i class="fas fa-play-circle"></i>
-                                    </a>
-                                    <a href="{% url 'group_edit' group.id %}" class="text-gray-400 hover:text-gray-600 transition" title="Tahrirlash">
-                                        <i class="fas fa-edit"></i>
-                                    </a>
-                                    <a href="{% url 'group_delete' group.id %}" class="text-red-400 hover:text-red-600 transition" title="O'chirish">
-                                        <i class="fas fa-trash-alt"></i>
-                                    </a>
-                                </div>
-                            </td>
+                             <td class="px-6 py-4 text-right">
+                                 <div class="flex items-center justify-end gap-0.5">
+                                     <div id="groupActions{{ group.id }}" class="flex items-center gap-0.5 flex-row-reverse" style="display: none;">
+                                         <a href="{% url 'group_detail' group.id %}" class="action-item flex items-center justify-center w-7 h-7 rounded-lg hover:bg-gray-100 transition" title="Ko'rish">
+                                             <i class="fas fa-eye text-gray-400 text-xs"></i>
+                                         </a>
+                                         <a href="{% url 'group_exam_config' group.id %}" class="action-item flex items-center justify-center w-7 h-7 rounded-lg hover:bg-gray-100 transition" title="Imtihon sozlamalari">
+                                             <i class="fas fa-sliders-h text-gray-400 text-xs"></i>
+                                         </a>
+                                         <a href="{% url 'group_categories_manage' group.id %}" class="action-item flex items-center justify-center w-7 h-7 rounded-lg hover:bg-gray-100 transition" title="Kategoriyalar">
+                                             <i class="fas fa-tags text-gray-400 text-xs"></i>
+                                         </a>
+                                         <a href="{% url 'group_folders_manage' group.id %}" class="action-item flex items-center justify-center w-7 h-7 rounded-lg hover:bg-gray-100 transition" title="Papkalar">
+                                             <i class="fas fa-folder text-gray-400 text-xs"></i>
+                                         </a>
+                                         <a href="{% url 'exam_control' group.id %}" class="action-item flex items-center justify-center w-7 h-7 rounded-lg hover:bg-gray-100 transition" title="Imtihon">
+                                             <i class="fas fa-play-circle text-gray-400 text-xs"></i>
+                                         </a>
+                                         <div class="w-px h-4 bg-gray-200 mx-0.5"></div>
+                                         <a href="{% url 'group_edit' group.id %}" class="action-item flex items-center justify-center w-7 h-7 rounded-lg hover:bg-gray-100 transition" title="Tahrirlash">
+                                             <i class="fas fa-edit text-gray-400 text-xs"></i>
+                                         </a>
+                                         <a href="{% url 'group_delete' group.id %}" class="action-item flex items-center justify-center w-7 h-7 rounded-lg hover:bg-red-50 transition" title="O'chirish">
+                                             <i class="fas fa-trash-alt text-red-400 text-xs"></i>
+                                         </a>
+                                     </div>
+                                     <button onclick="toggleGroupActions({{ group.id }})" class="p-1.5 rounded-lg hover:bg-gray-100 transition group-menu-btn">
+                                         <i class="fas fa-ellipsis-v text-gray-400 text-sm"></i>
+                                     </button>
+                                 </div>
+                             </td>
                         </tr>
                         {% empty %}
                         <tr>
@@ -358,6 +369,18 @@
         </div>
     </a>
     
+    <a href="{% url 'folder_list' %}" class="bg-white rounded-xl border border-gray-200 p-5 hover:shadow-md transition group">
+        <div class="flex items-center space-x-4">
+            <div class="w-10 h-10 bg-gray-100 rounded-xl flex items-center justify-center group-hover:bg-gray-200 transition">
+                <i class="fas fa-folder text-gray-600 text-lg"></i>
+            </div>
+            <div>
+                <p class="font-medium text-gray-900">Papka yaratish</p>
+                <p class="text-xs text-gray-400">Kategoriyalarni papkalarga guruhlash</p>
+            </div>
+            <i class="fas fa-arrow-right text-gray-300 ml-auto group-hover:text-gray-500 transition"></i>
+        </div>
+    </a>
     <a href="{% url 'category_list' %}" class="bg-white rounded-xl border border-gray-200 p-5 hover:shadow-md transition group">
         <div class="flex items-center space-x-4">
             <div class="w-10 h-10 bg-gray-100 rounded-xl flex items-center justify-center group-hover:bg-gray-200 transition">
@@ -388,6 +411,40 @@
 </div>
 
 <script>
+// Group 3-nuqta amallari — yonma-yon
+function toggleGroupActions(id) {
+    const container = document.getElementById('groupActions' + id);
+    const isHidden = container.style.display === 'none';
+    document.querySelectorAll('[id^="groupActions"]').forEach(c => {
+        c.style.display = 'none';
+        c.querySelectorAll('.action-item').forEach(el => {
+            el.style.animation = 'none';
+            el.style.opacity = '';
+        });
+    });
+    if (isHidden) {
+        container.style.display = 'flex';
+        const items = container.querySelectorAll('.action-item');
+        items.forEach((item, index) => {
+            item.style.opacity = '0';
+            item.style.animation = `slideInRight 0.2s ease-out forwards`;
+            item.style.animationDelay = `${index * 0.05}s`;
+        });
+    }
+}
+
+document.addEventListener('click', function(e) {
+    if (!e.target.closest('.group-menu-btn') && !e.target.closest('[id^="groupActions"]')) {
+        document.querySelectorAll('[id^="groupActions"]').forEach(c => {
+            c.style.display = 'none';
+            c.querySelectorAll('.action-item').forEach(el => {
+                el.style.animation = 'none';
+                el.style.opacity = '';
+            });
+        });
+    }
+});
+
 // Dropdown menyu uchun JavaScript
 document.addEventListener('DOMContentLoaded', function() {
     const dropdownBtn = document.getElementById('dropdownBtn');
@@ -453,6 +510,17 @@ document.querySelectorAll('.hover\\:shadow-md').forEach(el => {
     to {
         opacity: 1;
         transform: scale(1) translateY(0);
+    }
+}
+
+@keyframes slideInRight {
+    from {
+        opacity: 0;
+        transform: translateX(20px);
+    }
+    to {
+        opacity: 1;
+        transform: translateX(0);
     }
 }
 
